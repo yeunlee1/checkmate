@@ -62,3 +62,4 @@ try {
 }
 
 Write-Host "제목 정책 검증 통과. 허용 $($passTitles.Count)건, 거절 $($failTitles.Count)건, 참조 이름 5건, 커밋 파일 2건."
+exit 0
