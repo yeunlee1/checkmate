@@ -21,9 +21,14 @@
     "desktop:dev": "node scripts/데스크톱개발.mjs",
     "desktop:test": "node scripts/데스크톱검증.mjs"
   },
+  "overrides": {
+    "qs": "6.16.0"
+  },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
     "@playwright/test": "1.63.0",
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.6",
     "typescript": "7.0.2",
