@@ -91,8 +91,14 @@ function pngDimensions(url: string): Viewport | null {
   const prefix = 'data:image/png;base64,';
   if (!url.startsWith(prefix)) return null;
   const payload = url.slice(prefix.length);
-  if (payload.length < 44 || payload.length > Math.ceil(8 * 1024 * 1024 / 3) * 4
-    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(payload)) return null;
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+  if (payload.length < 44 || payload.length % 4 !== 0
+    || payload.length / 4 * 3 - padding > 8 * 1024 * 1024) return null;
+  for (let index = 0; index < payload.length - padding; index++) {
+    const char = payload.charCodeAt(index);
+    if (!((char >= 65 && char <= 90) || (char >= 97 && char <= 122)
+      || (char >= 48 && char <= 57) || char === 43 || char === 47)) return null;
+  }
   try {
     const header = atob(payload.slice(0, 44));
     if (header.length < 29 || header.slice(0, 8) !== '\x89PNG\r\n\x1a\n'
