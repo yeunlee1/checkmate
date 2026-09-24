@@ -45,6 +45,7 @@ export class ServiceError extends Error {
 }
 
 export function errorResponse(requestId: string, error: unknown): ApiResponse {
+  if (error instanceof z.ZodError) return { apiVersion: 1, requestId, ok: false, error: { code: 'invalid-input', message: '입력 형식과 필수 항목을 확인해 주세요.', retryable: false, nextAction: '도구의 입력 계약에 맞게 요청해 주세요.' } };
   if (error instanceof ServiceError) return { apiVersion: 1, requestId, ok: false, error: { code: error.code, message: error.message, retryable: error.retryable, nextAction: error.nextAction } };
   const known = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'internal-error';
   const allowed = new Set(['invalid-input', 'invalid-project', 'source-unreadable', 'source-too-large', 'source-changed', 'project-not-found', 'plan-stale', 'request-conflict', 'workspace-busy', 'storage-busy', 'storage-error', 'run-not-found', 'invalid-state', 'evidence-not-found', 'evidence-conflict', 'evidence-missing', 'evidence-degraded', 'evidence-restricted', 'unsupported-version', 'schema-mismatch', 'storage-corrupt']);

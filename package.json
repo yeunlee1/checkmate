@@ -9,16 +9,21 @@
   },
   "workspaces": [
     "packages/contracts",
-    "packages/engine"
+    "packages/engine",
+    "packages/desktop"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "node scripts/작업보호빌드.mjs && npm run build --workspaces --if-present",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && npm run typecheck && vitest run",
     "check": "npm test",
-    "checkmate": "node packages/engine/dist/명령.js"
+    "checkmate": "node packages/engine/dist/명령.js",
+    "desktop:dev": "node scripts/데스크톱개발.mjs",
+    "desktop:test": "node scripts/데스크톱검증.mjs"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.63.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.6",
     "typescript": "7.0.2",

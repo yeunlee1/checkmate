@@ -27,7 +27,8 @@ export class JsonFrames {
         }
       } catch { this.fail(new ServiceError('invalid-frame', '서비스 메시지 형식이나 크기를 확인해 주세요.')); socket.destroy(); }
     });
-    socket.on('error', () => this.fail(new ServiceError('service-disconnected', '로컬 서비스 연결이 끊겼습니다.', true)));
+    socket.on('error', (error: NodeJS.ErrnoException) => this.fail(new ServiceError(
+      error.code === 'ENOENT' || error.code === 'ECONNREFUSED' ? 'service-unavailable' : 'service-disconnected', '로컬 서비스에 연결할 수 없습니다.', true)));
     socket.on('close', () => this.fail(new ServiceError('service-disconnected', '로컬 서비스 연결이 종료됐습니다.', true)));
   }
 

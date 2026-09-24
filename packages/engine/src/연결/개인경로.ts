@@ -24,10 +24,12 @@ export async function rejectLinks(path: string): Promise<void> {
   }
 }
 
-async function makePrivate(path: string): Promise<void> {
-  if (process.platform !== 'win32') { await chmod(path, 0o700); return; }
+async function makePrivate(path: string, file = false): Promise<void> {
+  if (process.platform !== 'win32') { await chmod(path, file ? 0o600 : 0o700); return; }
   const encodedPath = Buffer.from(path, 'utf8').toString('base64');
-  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); [IO.Directory]::SetAccessControl($target,$acl)`;
+  const access = file ? 'File' : 'Directory';
+  const inheritance = file ? 'None' : 'ContainerInherit,ObjectInherit';
+  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[IO.${access}]::GetAccessControl($target); if (-not $acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($sid)) { throw 'owner-mismatch' }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${access}]::SetAccessControl($target,$acl)`;
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   try { execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore', timeout: 15000 }); }
   catch { throw new ServiceError('private-directory-failed', '사용자 전용 폴더 권한을 설정할 수 없습니다.'); }
@@ -36,28 +38,56 @@ async function makePrivate(path: string): Promise<void> {
 export async function prepareDataPaths(paths: DataPaths): Promise<void> {
   await rejectLinks(paths.root);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
+  await rejectLinks(paths.root);
   const marker = join(paths.root, '체크메이트자료.json');
   await rejectLinks(marker);
-  try {
-    const existing = JSON.parse(await readFile(marker, 'utf8')) as unknown;
-    if (JSON.stringify(existing) !== JSON.stringify({ schemaVersion: 1, kind: 'checkmate-data' })) throw new Error('marker');
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw new ServiceError('unrecognized-data-root', '체크메이트 자료 폴더의 표식을 확인할 수 없습니다.');
-    if ((await readdir(paths.root)).length !== 0) throw new ServiceError('unrecognized-data-root', '자료 폴더에는 빈 전용 폴더를 선택해 주세요.');
-    const handle = await open(marker, 'wx', 0o600);
-    try { await handle.writeFile(JSON.stringify({ schemaVersion: 1, kind: 'checkmate-data' })); await handle.sync(); } finally { await handle.close(); }
+  const expectedMarker = JSON.stringify({ schemaVersion: 1, kind: 'checkmate-data' });
+  let markerExists = true;
+  try { await lstat(marker); }
+  catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+    markerExists = false;
   }
+  if (!markerExists) {
+    const contents = await readdir(paths.root);
+    if (contents.length > 0 && !(contents.length === 1 && contents[0] === '체크메이트자료.json'))
+      throw new ServiceError('unrecognized-data-root', '자료 폴더에는 빈 전용 폴더를 선택해 주세요.');
+    await makePrivate(paths.root);
+    try {
+      const handle = await open(marker, 'wx', 0o600);
+      try { await handle.writeFile(expectedMarker); await handle.sync(); } finally { await handle.close(); }
+    } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; }
+  }
+  let validMarker = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await rejectLinks(marker);
+    try { validMarker = await readFile(marker, 'utf8') === expectedMarker; }
+    catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+    if (validMarker) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (!validMarker) throw new ServiceError('unrecognized-data-root', '체크메이트 자료 폴더의 표식을 확인할 수 없습니다.');
   await makePrivate(paths.root);
+  await makePrivate(marker, true);
   for (const path of [paths.state, paths.runs, paths.runtime]) {
     await rejectLinks(path);
     await mkdir(path, { recursive: true, mode: 0o700 });
+    await rejectLinks(path);
+    await makePrivate(path);
   }
   await rejectLinks(paths.secret);
   try {
     const file = await open(paths.secret, 'wx', 0o600);
     try { await file.writeFile(randomBytes(32).toString('hex')); await file.sync(); } finally { await file.close(); }
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; }
-  await readConnectionSecret(paths);
+  await makePrivate(paths.secret, true);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try { await readConnectionSecret(paths); return; }
+    catch (error) {
+      if (!(error instanceof ServiceError && error.code === 'invalid-service-secret') || attempt === 19) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
 }
 
 export async function readConnectionSecret(paths: DataPaths): Promise<Buffer> {
