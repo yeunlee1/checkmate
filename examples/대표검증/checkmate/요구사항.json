@@ -1,0 +1,12 @@
+[
+  { "id": "req-normal-workflow", "title": "정상 저장과 재조회", "description": "저장한 값을 화면을 다시 열어 확인한다." },
+  { "id": "req-normal-exposure", "title": "정상 역할별 노출", "description": "viewer 응답에 관리자 전용 합성 표식이 없어야 한다." },
+  { "id": "req-normal-design", "title": "정상 화면 위치", "description": "합성 표시 요소가 작은 화면 안에 있어야 한다." },
+  { "id": "req-normal-accessibility", "title": "정상 자동 접근성", "description": "접근성 자동 검사 위반과 위치를 수집한다." },
+  { "id": "req-normal-detection", "title": "정상 계산 관측", "description": "명시적 합성 계산값을 비교하며 Stryker 변이 점수와 구분한다." },
+  { "id": "req-defect-workflow", "title": "결함 저장과 재조회", "description": "의도적으로 변형된 저장값을 검출한다." },
+  { "id": "req-defect-exposure", "title": "결함 역할별 노출", "description": "viewer 응답의 관리자 전용 합성 표식을 검출한다." },
+  { "id": "req-defect-design", "title": "결함 화면 위치", "description": "화면 밖 합성 표시 요소의 위치를 검출한다." },
+  { "id": "req-defect-accessibility", "title": "결함 자동 접근성", "description": "대체 텍스트 누락을 실제 axe 검사로 검출한다." },
+  { "id": "req-defect-detection", "title": "결함 계산 관측", "description": "의도적 계산 결함을 비교하며 Stryker 실행과 구분한다." }
+]

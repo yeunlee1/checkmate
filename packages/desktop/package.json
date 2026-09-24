@@ -1,0 +1,25 @@
+{
+  "name": "@checkmate/desktop",
+  "productName": "CheckMate",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/메인.js",
+  "description": "Local software verification for developers and AI coding agents.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && vite build",
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort"
+  },
+  "dependencies": {
+    "@checkmate/contracts": "0.1.0-alpha.1",
+    "@checkmate/engine": "0.1.0-alpha.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "vite": "8.3.1",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3"
+  }
+}

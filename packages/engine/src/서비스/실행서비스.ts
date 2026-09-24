@@ -1,4 +1,4 @@
-// 신뢰된 실행기를 접수된 실행에만 직렬로 연결하고 결과를 확정한다.
+// 신뢰된 실행기를 접수된 실행에만 최대 두 개 연결하고 결과를 확정한다.
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
@@ -19,7 +19,8 @@ type LocalRun = {
 };
 
 export class RunService {
-  private tail: Promise<unknown> = Promise.resolve();
+  private active = 0;
+  private readonly queue: { runId: string; planId: string; local: LocalRun }[] = [];
   private readonly local = new Map<string, LocalRun>();
 
   constructor(private readonly store: RunStore, private readonly executor: RunExecutor) {}
@@ -35,13 +36,24 @@ export class RunService {
       let reject!: (error: unknown) => void;
       const promise = new Promise<RunResult>((onSuccess, onFailure) => { resolve = onSuccess; reject = onFailure; });
       const local: LocalRun = { controller: new AbortController(), started: false, cancelled: false, promise, resolve, reject };
-      const job = this.tail.then(() => local.cancelled ? undefined : this.execute(admitted.runId, planId, local));
       this.local.set(admitted.runId, local);
-      this.tail = job.then(() => undefined, () => undefined);
-      void job.then((result) => { if (result) local.resolve(result); }, local.reject);
       void promise.then(() => this.local.delete(admitted.runId), () => this.local.delete(admitted.runId));
+      this.queue.push({ runId: admitted.runId, planId, local });
+      this.drain();
     }
     return admitted;
+  }
+
+  private drain(): void {
+    while (this.active < 2 && this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      if (next.local.cancelled) continue;
+      this.active += 1;
+      void Promise.resolve().then(() => this.execute(next.runId, next.planId, next.local)).then(
+        (result) => { this.active -= 1; next.local.resolve(result); this.drain(); },
+        (error: unknown) => { this.active -= 1; next.local.reject(error); this.drain(); },
+      );
+    }
   }
 
   async wait(runId: string): Promise<RunResult> {
@@ -96,7 +108,7 @@ export class RunService {
     } catch {
       // 실행기 오류의 세부 정보는 결과에 복사하지 않는다.
     }
-    if (local.cancelled) return this.store.finalizeRun(this.finish(running, 'cancelled'));
+    if (local.cancelled) return this.store.finalizeRun(this.finish(candidate && this.validCandidate(running, candidate) ? candidate : running, 'cancelled'));
     if (!candidate || !this.validCandidate(running, candidate))
       return this.store.finalizeRun(this.finish(running, 'unverifiable'));
     let final: RunResult;
@@ -122,8 +134,9 @@ export class RunService {
   private finish(result: RunResult, state: RunResult['state']): RunResult {
     const final: RunResult = {
       ...result, state, finalized: true, verdict: null, reasons: [],
-      ...(state === 'cancelled' || state === 'unverifiable' ? {
-        workerExitCode: null, environmentVerified: null, evidenceVerified: null, cleanupVerified: null,
+      ...((state === 'cancelled' || state === 'unverifiable') && ['queued', 'running'].includes(result.state) ? {
+        workerExitCode: null, environmentVerified: null, evidenceVerified: null,
+        cleanupVerified: state === 'cancelled' && result.state === 'queued' ? true : null,
       } : {}),
     };
     const assessment = assessResult(final);

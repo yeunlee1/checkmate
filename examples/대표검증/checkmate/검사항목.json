@@ -1,0 +1,12 @@
+[
+  { "id": "normal-workflow", "title": "정상 저장 재조회", "requirementId": "req-normal-workflow", "commandId": "run-normal", "required": true, "kind": "logic", "expected": "저장 후 재조회 값은 합성 주문", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "normal-exposure", "title": "정상 역할 노출", "requirementId": "req-normal-exposure", "commandId": "run-normal", "required": true, "kind": "security", "expected": "viewer 응답에 관리자 표식 없음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "normal-design", "title": "정상 화면 위치", "requirementId": "req-normal-design", "commandId": "run-normal", "required": true, "kind": "design", "expected": "합성 표시가 400x300 화면 안에 있음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "normal-accessibility", "title": "정상 자동 접근성", "requirementId": "req-normal-accessibility", "commandId": "run-normal", "required": true, "kind": "accessibility", "expected": "자동 접근성 위반 없음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "normal-detection", "title": "정상 계산 비교", "requirementId": "req-normal-detection", "commandId": "run-normal", "required": true, "kind": "detection", "expected": "합성 계산 값은 12", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "defect-workflow", "title": "결함 저장 재조회", "requirementId": "req-defect-workflow", "commandId": "run-defect", "required": true, "kind": "logic", "expected": "저장 후 재조회 값은 합성 주문", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "defect-exposure", "title": "결함 역할 노출", "requirementId": "req-defect-exposure", "commandId": "run-defect", "required": true, "kind": "security", "expected": "viewer 응답에 관리자 표식 없음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "defect-design", "title": "결함 화면 위치", "requirementId": "req-defect-design", "commandId": "run-defect", "required": true, "kind": "design", "expected": "합성 표시가 400x300 화면 안에 있음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "defect-accessibility", "title": "결함 자동 접근성", "requirementId": "req-defect-accessibility", "commandId": "run-defect", "required": true, "kind": "accessibility", "expected": "자동 접근성 위반 없음", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] },
+  { "id": "defect-detection", "title": "결함 계산 비교", "requirementId": "req-defect-detection", "commandId": "run-defect", "required": true, "kind": "detection", "expected": "합성 계산 값은 12", "codePaths": ["가상앱.mjs", "tests/검사.mjs"] }
+]

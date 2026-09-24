@@ -18,12 +18,12 @@ afterAll(async () => {
 });
 
 describe('명령 입구', () => {
-  it('진단은 DB나 이력을 생성하지 않고 미구현 기능을 표시한다.', async () => {
+  it('진단은 DB나 이력을 생성하지 않고 제공 기능과 설치본 제한을 표시한다.', async () => {
     const before = await readdir(directory);
     const result = invoke('doctor', '--json');
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, data: { stage: 'foundation', unavailable: ['project-runs', 'database', 'mcp', 'desktop', 'installer'] } });
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, data: { stage: 'development', capabilities: ['report-validation', 'project-runs', 'database', 'mcp'], unavailable: ['installer'] } });
     expect(await readdir(directory)).toEqual(before);
   });
 

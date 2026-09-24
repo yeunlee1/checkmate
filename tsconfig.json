@@ -9,10 +9,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
     "declaration": true,
     "inlineSourceMap": true,
     "inlineSources": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/src/**/*.tsx", "packages/*/src/**/*.cts", "tests/**/*.ts", "vitest.config.ts"]
 }

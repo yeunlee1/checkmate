@@ -3,6 +3,32 @@
   "version": "0.1.0-alpha.1",
   "private": true,
   "type": "module",
+  "exports": {
+    "./client": {
+      "types": "./dist/서비스/클라이언트.d.ts",
+      "import": "./dist/서비스/클라이언트.js"
+    },
+    "./report": {
+      "types": "./dist/서비스/보고서내보내기.d.ts",
+      "import": "./dist/서비스/보고서내보내기.js"
+    },
+    "./reporter": {
+      "types": "./dist/어댑터/리포터.d.ts",
+      "import": "./dist/어댑터/리포터.js"
+    },
+    "./browser": {
+      "types": "./dist/어댑터/브라우저검사.d.ts",
+      "import": "./dist/어댑터/브라우저검사.js"
+    },
+    "./mutation": {
+      "types": "./dist/어댑터/검출력검사.d.ts",
+      "import": "./dist/어댑터/검출력검사.js"
+    },
+    "./exposure": {
+      "types": "./dist/어댑터/정보노출검사.d.ts",
+      "import": "./dist/어댑터/정보노출검사.js"
+    }
+  },
   "bin": {
     "checkmate": "./dist/명령.js"
   },
@@ -10,9 +36,12 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@checkmate/contracts": "0.1.0-alpha.1",
+    "@modelcontextprotocol/sdk": "1.30.1",
     "better-sqlite3": "13.0.3",
     "commander": "15.0.0",
+    "playwright": "1.63.0",
     "zod": "4.6.5"
   }
 }

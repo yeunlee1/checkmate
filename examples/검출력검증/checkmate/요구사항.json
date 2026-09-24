@@ -1,0 +1,4 @@
+[
+  { "id": "req-strong-mutation", "title": "강한 검사 검출력", "description": "실제 Stryker 실행에서 모든 권한 함수 변이가 검출되어야 한다." },
+  { "id": "req-weak-mutation", "title": "약한 검사 누락 표시", "description": "실제 Stryker 실행에서 살아남은 변이의 위치와 점수를 실패 근거로 남긴다." }
+]

@@ -6,7 +6,9 @@
   "exports": {
     ".": { "types": "./dist/결과.d.ts", "import": "./dist/결과.js" },
     "./events": { "types": "./dist/이벤트.d.ts", "import": "./dist/이벤트.js" },
-    "./runs": { "types": "./dist/실행.d.ts", "import": "./dist/실행.js" }
+    "./runs": { "types": "./dist/실행.d.ts", "import": "./dist/실행.js" },
+    "./project": { "types": "./dist/프로젝트.d.ts", "import": "./dist/프로젝트.js" },
+    "./api": { "types": "./dist/연결.d.ts", "import": "./dist/연결.js" }
   },
   "scripts": { "build": "tsc -p tsconfig.json" },
   "dependencies": { "zod": "4.6.5" }
