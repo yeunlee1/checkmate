@@ -71,21 +71,22 @@ export async function ensureLauncher(dataRoot: string, nodeExecutable: string, c
   const root = checkedPath(dataRoot);
   const contents = launcherText(root, nodeExecutable, cliEntry);
   if (!(await hasOwnedDataRoot(root))) throw new Error('소유 표시가 없는 자료 폴더에는 CLI 진입점을 만들 수 없습니다.');
-  await makePrivate(root, false);
-  await makePrivate(join(root, '체크메이트자료.json'), true);
   const bin = join(root, 'bin');
   await assertNoLinks(bin);
-  await mkdir(bin, { mode: 0o700 }).catch(error => { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; });
+  let createdBin = false;
+  try { await mkdir(bin, { mode: 0o700 }); createdBin = true; }
+  catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; }
   if (!(await lstat(bin)).isDirectory()) throw new Error('CLI 진입점 폴더가 직접 경로가 아닙니다.');
   const canonicalBin = await realpath(bin);
   const target = join(canonicalBin, 'checkmate.cmd');
-  await makePrivate(bin, false);
   await assertNoLinks(target);
   try {
     const stat = await lstat(target);
     if (!stat.isFile() || stat.nlink !== 1 || !(await readFile(target, 'utf8')).startsWith(`@echo off\r\n${launcherMark}`))
       throw new Error('기존 CLI 진입점은 CheckMate가 만든 파일이 아닙니다.');
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
+  // 기존 디렉터리 ACL을 바꾸면 하위 하드링크의 외부 원본까지 바뀔 수 있다.
+  if (createdBin) await makePrivate(bin, false);
   const temporary = join(canonicalBin, `.checkmate-${randomUUID()}.tmp`);
   const handle = await open(temporary, 'wx', 0o600);
   try {

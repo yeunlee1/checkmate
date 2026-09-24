@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
 import { ServiceError } from '@checkmate/contracts/api';
 
 export type DataPaths = { root: string; state: string; runs: string; runtime: string; secret: string; endpoint: string };
-export function dataPaths(root = process.env.CHECKMATE_DATA_DIR ?? join(process.env.LOCALAPPDATA ?? join(homedir(), '.local', 'share'), 'CheckMate')): DataPaths {
+export function dataPaths(root = process.env.CHECKMATE_DATA_DIR ?? join(process.env.LOCALAPPDATA ?? join(homedir(), '.local', 'share'), 'CheckMateData')): DataPaths {
   if (!isAbsolute(root) || resolve(root) === parse(root).root) throw new ServiceError('invalid-path', '전용 자료 폴더의 절대 경로가 필요합니다.');
   const resolved = resolve(root);
   const key = createHash('sha256').update(process.platform === 'win32' ? resolved.toLowerCase() : resolved).digest('hex').slice(0, 24);

@@ -16,7 +16,7 @@ catch (error) { console.error(error); squirrelExitCode = 1; }
 if (squirrelExitCode !== null) app.exit(squirrelExitCode);
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const dataRoot = process.env.CHECKMATE_DATA_DIR ?? join(app.getPath('appData'), '..', 'Local', 'CheckMate');
+const dataRoot = process.env.CHECKMATE_DATA_DIR ?? join(process.env.LOCALAPPDATA ?? join(app.getPath('appData'), '..', 'Local'), 'CheckMateData');
 const nodeExecutable = app.isPackaged ? join(process.resourcesPath, 'node', 'node.exe') : process.env.CHECKMATE_NODE_PATH;
 const serviceEntry = app.isPackaged ? join(process.resourcesPath, 'engine', 'packages', 'engine', 'dist', '서비스', '상주서비스.js')
   : fileURLToPath(new URL('../../../engine/dist/서비스/상주서비스.js', import.meta.url));

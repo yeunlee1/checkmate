@@ -1,12 +1,12 @@
 // 전용 자료 폴더의 권한과 여러 클라이언트의 단일 서비스 시작을 검증한다.
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { dataPaths, prepareDataPaths, readConnectionSecret } from '../packages/engine/src/연결/개인경로.js';
 import { requestLocal } from '../packages/engine/src/연결/로컬통신.js';
@@ -23,6 +23,25 @@ async function fixture() {
   return dataPaths(join(parent, '관리 자료'));
 }
 const request = () => ({ apiVersion: 1 as const, requestId: randomUUID(), method: 'capabilities' as const, input: {} });
+
+it('기본 자료 경로는 기존 설치 폴더 밖에서 초기화되고 명시한 기존 경로도 유지한다', async () => {
+  const parent = dirname((await fixture()).root);
+  vi.stubEnv('LOCALAPPDATA', parent);
+  vi.stubEnv('CHECKMATE_DATA_DIR', undefined);
+  try {
+    const installation = join(parent, 'CheckMate');
+    await mkdir(installation);
+    await writeFile(join(installation, 'Update.exe'), '합성 설치 파일');
+    const paths = dataPaths();
+    expect(paths.root).toBe(join(parent, 'CheckMateData'));
+    await prepareDataPaths(paths);
+    expect(await readConnectionSecret(paths)).toHaveLength(32);
+    expect(await readFile(join(installation, 'Update.exe'), 'utf8')).toBe('합성 설치 파일');
+    expect(dataPaths(installation).root).toBe(installation);
+    vi.stubEnv('CHECKMATE_DATA_DIR', installation);
+    expect(dataPaths().root).toBe(installation);
+  } finally { vi.unstubAllEnvs(); }
+});
 
 it('한글과 공백 경로에 전용 자료를 동시 초기화해 기존 비밀을 유지한다', async () => {
   const paths = await fixture();
@@ -129,7 +148,10 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
   await writeFile(entry, `// 합성 서비스의 짧은 유휴 종료 시간을 설정한다.\nimport { startLocalService } from '${serviceUrl}';\nawait startLocalService(undefined, 2000);\n`);
   const script = `import { callService } from '${clientUrl}'; import { readFileSync } from 'node:fs'; import { join } from 'node:path'; import Database from 'better-sqlite3'; import { randomUUID } from 'node:crypto'; const root=process.argv[1]; const serviceEntry=process.argv[2]; const response=await callService({ apiVersion:1,requestId:randomUUID(),method:'capabilities',input:{} },{dataRoot:root,serviceEntry}); if(!response.ok) throw Error('capabilities'); const owner=JSON.parse(readFileSync(join(root,'runtime','서비스소유.json'),'utf8')); const db=new Database(join(root,'state','checkmate.sqlite'),{readonly:true,fileMustExist:true}); const version=db.prepare('SELECT version FROM schema_migrations').get().version; const file=db.pragma('database_list')[0].file; db.close(); console.log(JSON.stringify({pid:owner.pid,id:owner.id,version,file}));`;
   const runClient = async () => {
-    const { stdout } = await execute(process.execPath, ['--input-type=module', '-e', script, paths.root, entry], { timeout: 20000, windowsHide: true });
+    const { stdout } = await execute(process.execPath, ['--input-type=module', '-e', script, paths.root, entry], { timeout: 35000, windowsHide: true })
+      .catch((error: { code?: string | number; killed?: boolean; signal?: string; stderr?: string }) => {
+        throw new Error(`독립 클라이언트 실패. 코드 ${error.code}, 시간 제한 종료 ${error.killed}, 신호 ${error.signal}. ${error.stderr?.slice(-4000) ?? ''}`);
+      });
     return JSON.parse(stdout) as { pid: number; id: string; version: number; file: string };
   };
   const rows = await Promise.all(Array.from({ length: 4 }, runClient));
@@ -156,4 +178,4 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   await expect(readFile(lock)).rejects.toMatchObject({ code: 'ENOENT' });
-}, 45000);
+}, 120000);

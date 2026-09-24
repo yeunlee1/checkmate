@@ -1,6 +1,6 @@
 // Squirrel 이벤트와 고정 CLI 진입점의 파일 경계를 검증한다.
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
@@ -74,6 +74,38 @@ test('bin 링크가 외부 폴더를 가리키면 파일을 만들지 않는다'
 });
 
 const resources = process.env.CHECKMATE_PACKAGED_RESOURCES;
+
+test.runIf(process.platform === 'win32')('기존 파일과 하드링크 거절은 상위 및 외부 원본 ACL을 바꾸지 않는다', async () => {
+  const base = await fixture();
+  for (const hardLink of [false, true]) {
+    const root = join(base, hardLink ? '연결 자료' : '일반 자료');
+    const bin = join(root, 'bin');
+    await mkdir(bin, { recursive: true });
+    const marker = join(root, '체크메이트자료.json');
+    await writeFile(marker, JSON.stringify({ schemaVersion: 1, kind: 'checkmate-data' }));
+    const outside = join(base, hardLink ? '외부원본.txt' : '별도원본.txt');
+    await writeFile(outside, '기존 사용자 자료');
+    const target = join(bin, 'checkmate.cmd');
+    if (hardLink) await link(outside, target);
+    else await writeFile(target, '기존 사용자 자료');
+    const paths = [root, bin, marker, target, outside];
+    const inspect = () => {
+      const encoded = Buffer.from(JSON.stringify(paths), 'utf8').toString('base64');
+      const script = `$ErrorActionPreference='Stop'; $paths=ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))); @($paths | ForEach-Object { if ([IO.Directory]::Exists($_)) { [IO.Directory]::GetAccessControl($_).Sddl } else { [IO.File]::GetAccessControl($_).Sddl } }) | ConvertTo-Json -Compress`;
+      const result = spawnSync(join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+        ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+        { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+      expect(result.status, result.stderr).toBe(0);
+      return JSON.parse(result.stdout) as string[];
+    };
+    const before = inspect();
+    await expect(ensureLauncher(root, process.execPath, join(base, '명령.js'))).rejects.toThrow('기존 CLI 진입점');
+    expect(inspect()).toEqual(before);
+    expect(await readFile(outside, 'utf8')).toBe('기존 사용자 자료');
+    expect(await readFile(target, 'utf8')).toBe('기존 사용자 자료');
+  }
+});
+
 test.skipIf(!resources)('실제 포장 Node와 CLI를 공백과 한글 자료 경로에서 doctor로 호출한다', async () => {
   const base = await fixture();
   const root = join(base, '관리 (자료)', '새 합성 자료');
