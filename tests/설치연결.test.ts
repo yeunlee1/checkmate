@@ -95,7 +95,11 @@ test.runIf(process.platform === 'win32')('기존 파일과 하드링크 거절�
       const result = spawnSync(join(process.env.SystemRoot!, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
         ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
         { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-      expect(result.status, result.stderr).toBe(0);
+      if (result.status !== 0) {
+        const diagnostic = { status: result.status, error: result.error?.message,
+          stderr: result.stderr?.slice(-4000), stdout: result.stdout?.slice(-4000) };
+        throw new Error(`ACL 수집 실패. ${JSON.stringify(diagnostic).replace(/[0-9a-f]{64}/gi, '[비밀 제외]')}`);
+      }
       return JSON.parse(result.stdout) as string[];
     };
     const before = inspect();
