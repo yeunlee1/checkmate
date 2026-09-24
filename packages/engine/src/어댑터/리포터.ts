@@ -1,7 +1,7 @@
 // 일반 Node 검사의 결과와 실제 증거 파일을 기존 NDJSON 작업 프로토콜로 기록한다.
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, realpath, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { adapterEventSchema } from '@checkmate/contracts/events';
 import { resultInputSchema } from '@checkmate/contracts';
 
@@ -57,11 +57,13 @@ export function createReporter(options: { runId?: string; evidenceDir?: string;
       if (bytes.length > (input.mime.startsWith('image/') ? maxImageBytes : maxTextBytes)) {
         throw new Error('증거 파일 크기 제한을 넘었습니다.');
       }
-      const root = resolve(evidenceDir);
-      const rootInfo = await lstat(root);
-      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || await realpath(root) !== root) {
-        throw new Error('증거 폴더의 실제 경로가 다릅니다.');
+      const inputRoot = resolve(evidenceDir);
+      for (let current = inputRoot; ; current = dirname(current)) {
+        const info = await lstat(current);
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('증거 폴더의 실제 경로가 다릅니다.');
+        if (dirname(current) === current) break;
       }
+      const root = await realpath(inputRoot);
       const path = join(root, input.relativePath);
       await writeFile(path, bytes, { flag: 'wx', mode: 0o600 });
       const evidence: Evidence = { id: randomUUID(), relativePath: input.relativePath,

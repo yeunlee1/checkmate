@@ -34,6 +34,13 @@ it('한글과 공백 경로에 전용 자료를 동시 초기화해 기존 비�
   expect(await readFile(join(paths.runtime, '읽기쓰기.txt'), 'utf8')).toBe('한글 자료');
 });
 
+it('완료한 초기화는 다시 검증해 손상된 표식을 거절한다', async () => {
+  const paths = await fixture();
+  await prepareDataPaths(paths);
+  await writeFile(join(paths.root, '체크메이트자료.json'), '손상');
+  await expect(prepareDataPaths(paths)).rejects.toMatchObject({ code: 'unrecognized-data-root' });
+});
+
 it.runIf(process.platform === 'win32')('Windows DACL은 상속을 끊고 현재 사용자 SID만 허용한다', async () => {
   const paths = await fixture();
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');

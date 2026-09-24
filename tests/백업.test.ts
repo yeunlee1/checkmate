@@ -1,7 +1,9 @@
 // 합성 SQLite와 실제 증거 파일로 백업의 무결성과 새 빈 폴더 복구를 검증한다.
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import Database from 'better-sqlite3';
 import { afterEach, expect, test, vi } from 'vitest';
 import { assessResult } from '@checkmate/contracts';
@@ -14,6 +16,7 @@ import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { createStoreFixture } from './저장시험자료.js';
 
 const cleanup: (() => Promise<void>)[] = [];
+const execute = promisify(execFile);
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 const hash = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
 
@@ -87,6 +90,54 @@ test('전용 backups 이외의 관리 자료 하위와 자료 루트 조상은 �
   for (const path of [f.paths.root, f.paths.state, join(f.paths.runs, '백업'), f.files.directory]) {
     await expect(createBackup(f.db, f.paths, path)).rejects.toMatchObject({ code: 'invalid-path' });
   }
+});
+
+test.runIf(process.platform === 'win32')('짧은 입력 경로와 실제 경로가 달라도 관리 자료 내부 백업 경계를 지킨다', async () => {
+  const f = await fixture();
+  const actualRoot = await realpath(f.paths.root);
+  if (actualRoot.toLowerCase() === f.paths.root.toLowerCase()) return;
+  await expect(createBackup(f.db, f.paths, join(actualRoot, 'state')))
+    .rejects.toMatchObject({ code: 'invalid-path' });
+  const result = await createBackup(f.db, f.paths, join(actualRoot, 'backups'));
+  expect(result.manifest.files.map((file) => file.path)).toContain(`runs/${f.runId}/결과.txt`);
+});
+
+test.runIf(process.platform === 'win32')('기존 8.3 별칭으로 지정한 폴더의 하위 복구를 거부한다', async () => {
+  const longRoot = process.env.ProgramFiles;
+  if (!longRoot) return;
+  const encodedPath = Buffer.from(longRoot, 'utf8').toString('base64');
+  const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public static class ShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string path, StringBuilder result, uint length); }'; $path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $result=New-Object Text.StringBuilder 32768; if ([ShortPath]::GetShortPathName($path,$result,[uint32]$result.Capacity) -eq 0) { throw 'short-path-failed' }; $result.ToString()`;
+  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const { stdout } = await execute(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+    Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
+  const shortRoot = stdout.trim();
+  if (!shortRoot || shortRoot.toLowerCase() === longRoot.toLowerCase()) return;
+  await expect(restoreBackup(shortRoot, join(longRoot, '체크메이트 복구 대상')))
+    .rejects.toMatchObject({ code: 'invalid-path' });
+});
+
+test.runIf(process.platform === 'win32')('Windows 백업 내부 ACL만 현재 사용자 전용으로 바꾸고 상위 ACL은 보존한다', async () => {
+  const f = await fixture();
+  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const inspect = async (paths: string[]) => {
+    const encoded = paths.map((path) => `'${Buffer.from(path, 'utf8').toString('base64')}'`).join(',');
+    const script = `$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(${encoded}); $result=@(foreach($item in $items) { $path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($item)); $acl=if ([IO.File]::Exists($path)) { [IO.File]::GetAccessControl($path) } else { [IO.Directory]::GetAccessControl($path) }; [PSCustomObject]@{ sid=$sid; owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; access=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value + ':' + $_.AccessControlType.ToString() }); sddl=$acl.Sddl } }); ConvertTo-Json -InputObject $result -Compress`;
+    const { stdout } = await execute(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+      Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
+    return JSON.parse(stdout) as { sid: string; owner: string; protected: boolean; access: string[]; sddl: string }[];
+  };
+  const before = (await inspect([f.files.directory]))[0]!.sddl;
+  const result = await createBackup(f.db, f.paths, f.backupRoot);
+  const internal = [result.backupDirectory, join(result.backupDirectory, 'state'),
+    join(result.backupDirectory, 'state', 'checkmate.sqlite'),
+    join(result.backupDirectory, 'runs', f.runId), join(result.backupDirectory, 'runs', f.runId, '결과.txt'),
+    join(result.backupDirectory, '백업명세.json'), join(result.backupDirectory, '완료표식.txt')];
+  for (const row of await inspect(internal)) {
+    expect(row.owner).toBe(row.sid);
+    expect(row.protected).toBe(true);
+    expect(row.access).toEqual([`${row.sid}:Allow`]);
+  }
+  expect((await inspect([f.files.directory]))[0]!.sddl).toBe(before);
 });
 
 test('손상·누락·미완성 백업과 비어 있지 않은 대상은 복구 전에 거부한다', async () => {

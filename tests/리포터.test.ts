@@ -1,6 +1,7 @@
 // 구조화 리포터의 파일 경계와 실제 부모 실행기 연동을 검증한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,6 +41,26 @@ describe('구조화 리포터', () => {
       const events = [];
       for await (const event of readAdapterEvents(chunks(), runId)) events.push(event);
       expect(events.map(event => [event.sequence, event.type])).toEqual([[1, 'evidence-created'], [2, 'case-result']]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('상위 링크는 거절하고 Windows 짧은 실제 경로에는 증거를 쓴다.', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'checkmate-reporter-'));
+    try {
+      const destination = join(root, '실제');
+      await mkdir(join(destination, '내부'), { recursive: true });
+      const link = join(root, '링크');
+      await symlink(destination, link, process.platform === 'win32' ? 'junction' : 'dir');
+      const input = { relativePath: '근거.txt', content: '합성', mime: 'text/plain' as const };
+      const linked = createReporter({ runId: randomUUID(), evidenceDir: join(link, '내부'), writeLine: () => {} });
+      await expect(linked.evidence(input)).rejects.toThrow('증거 폴더');
+      if (process.platform === 'win32') {
+        const short = execFileSync('cmd.exe', ['/d', '/c', 'for %I in ("%CHECKMATE_TEST_ROOT%") do @echo %~sI'],
+          { env: { ...process.env, CHECKMATE_TEST_ROOT: root }, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true }).trim();
+        const reporter = createReporter({ runId: randomUUID(), evidenceDir: short, writeLine: () => {} });
+        await reporter.evidence(input);
+        expect(await readFile(join(root, '근거.txt'), 'utf8')).toBe('합성');
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -101,7 +122,7 @@ describe('대표 예제와 부모 검사실행기', () => {
         expect(events.filter(item => item.type === 'case-result')).toHaveLength(5);
         for (const item of evidence) expect((await evidenceStore.inspect(started.runId, item.id)).integrity).toBe('verified');
         const design = JSON.parse(await readFile(join(runsRoot, started.runId, '디자인위치.json'), 'utf8')) as {
-          kind: string; screenshotEvidenceId: string; viewport: { width: number }; findings: { selector: string; boundingBox: { x: number } }[] };
+          kind: string; screenshotEvidenceId: string; viewport: { width: number }; findings: { selector: string; boundingBox: { x: number; width: number } }[] };
         expect(design.kind).toBe('checkmate-design');
         expect(design.screenshotEvidenceId).toBe(evidence.find(item => item.relativePath === '화면.png')?.id);
         expect(design.viewport.width).toBe(400);
@@ -119,7 +140,7 @@ describe('대표 예제와 부모 검사실행기', () => {
         } else {
           expect(result.verdict).toBe('failed');
           expect(result.cases.filter(item => item.status === 'failed')).toHaveLength(5);
-          expect(design.findings[0]?.boundingBox.x).toBeGreaterThan(400);
+          expect(design.findings[0]!.boundingBox.x + design.findings[0]!.boundingBox.width).toBeGreaterThan(400);
           const designCase = result.cases.find(item => item.testId === 'defect-design');
           expect(designCase?.location?.file).toBe('가상앱.mjs');
           expect(designCase?.observed).toContain('위치');

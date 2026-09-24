@@ -36,7 +36,7 @@ export function createFixtureApp(mode) {
       : '<img alt="상품 이미지" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs">';
     send(200, 'text/html; charset=utf-8', `<!doctype html><html lang="ko"><meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
-      <title>합성 주문</title><style>body{font:16px sans-serif;margin:20px}#decor{position:fixed;left:${flawed ? 900 : 0}px;top:170px}</style>
+      <title>합성 주문</title><style>body{font:16px sans-serif;margin:20px}#decor{position:fixed;left:${flawed ? 390 : 0}px;top:170px}</style>
       <main><h1>합성 주문</h1><label for="item">항목</label><input id="item">
       <button id="save">저장</button><p id="saved" role="status"></p>${image}<span id="decor">합성 표시</span></main>
       <script>

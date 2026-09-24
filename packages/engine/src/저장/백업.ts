@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, rmdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { dataPaths, prepareDataPaths, rejectLinks, type DataPaths } from '../연결/개인경로.js';
@@ -35,6 +35,15 @@ function normalized(path: string): string { return process.platform === 'win32' 
 function within(root: string, path: string): boolean {
   const rest = relative(root, path);
   return rest === '' || (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
+}
+async function canonicalLocation(path: string): Promise<string> {
+  try { return await realpath(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error;
+    const parent = dirname(path);
+    if (parent === path) throw error;
+    return join(await canonicalLocation(parent), basename(path));
+  }
 }
 function sha256(bytes: Buffer | string): string { return createHash('sha256').update(bytes).digest('hex'); }
 function pathParts(value: string): string[] {
@@ -98,7 +107,7 @@ async function privatePath(path: string, file = false): Promise<void> {
   const encoded = Buffer.from(path, 'utf8').toString('base64');
   const kind = file ? 'File' : 'Directory';
   const inheritance = file ? 'None' : 'ContainerInherit,ObjectInherit';
-  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[IO.${kind}]::GetAccessControl($target); if (-not $acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($sid)) { throw 'owner-mismatch' }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${kind}]::SetAccessControl($target,$acl)`;
+  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); $identity=[Security.Principal.WindowsIdentity]::GetCurrent(); $sid=$identity.User; $acl=[IO.${kind}]::GetAccessControl($target); $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]); if (-not $owner.Equals($sid)) { if (-not $owner.Equals($identity.Owner)) { throw 'owner-mismatch' }; $acl.SetOwner($sid) }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${kind}]::SetAccessControl($target,$acl)`;
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   try { execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
     { windowsHide: true, stdio: 'ignore', timeout: 15000 }); }
@@ -258,15 +267,15 @@ async function verifyBackup(directory: string): Promise<BackupManifest> {
 export async function createBackup(db: Database.Database, paths: DataPaths, backupRoot: string): Promise<BackupResult> {
   if (!isAbsolute(backupRoot) || resolve(backupRoot) === parse(backupRoot).root)
     fail('invalid-path', '백업 부모 폴더의 절대 경로가 필요합니다.');
-  const source = resolve(paths.root);
-  const destination = resolve(backupRoot);
-  const dedicated = normalized(destination) === normalized(join(source, 'backups'));
-  if ((within(source, destination) && !dedicated) || within(destination, source))
-    fail('invalid-path', '백업 폴더는 전용 backups 폴더 또는 별도 위치를 선택해 주세요.');
   await rejectLinks(paths.root);
   await rejectLinks(paths.state);
   await rejectLinks(paths.runs);
-  await rejectLinks(destination);
+  await rejectLinks(backupRoot);
+  const source = await canonicalLocation(paths.root);
+  const destination = await canonicalLocation(backupRoot);
+  const dedicated = normalized(destination) === normalized(join(source, 'backups'));
+  if ((within(source, destination) && !dedicated) || within(destination, source))
+    fail('invalid-path', '백업 폴더는 전용 backups 폴더 또는 별도 위치를 선택해 주세요.');
   if (!(await lstat(paths.root)).isDirectory() || !(await lstat(paths.runs)).isDirectory())
     fail('invalid-path', '관리 자료 폴더를 확인할 수 없습니다.');
   const actual = (db.pragma('database_list') as { name: string; file: string }[]).find((row) => row.name === 'main')?.file;
@@ -327,8 +336,10 @@ export async function createBackup(db: Database.Database, paths: DataPaths, back
 export async function restoreBackup(backupDirectory: string, targetRoot: string): Promise<DataPaths> {
   if (!isAbsolute(backupDirectory) || !isAbsolute(targetRoot)
     || resolve(targetRoot) === parse(targetRoot).root) fail('invalid-path', '백업과 복구 대상에는 절대 경로가 필요합니다.');
-  const source = resolve(backupDirectory);
-  const target = resolve(targetRoot);
+  await rejectLinks(backupDirectory);
+  await rejectLinks(targetRoot);
+  const source = await canonicalLocation(backupDirectory);
+  const target = await canonicalLocation(targetRoot);
   if (within(source, target) || within(target, source))
     fail('invalid-path', '복구 대상은 백업 폴더와 분리해 주세요.');
   const manifest = await verifyBackup(source);

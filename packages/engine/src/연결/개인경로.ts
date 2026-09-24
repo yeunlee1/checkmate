@@ -51,7 +51,25 @@ export async function verifyLocalEndpoint(paths: DataPaths): Promise<void> {
     throw new ServiceError('unsafe-path', '사용자 전용 연결 폴더의 소유자나 권한이 올바르지 않습니다.');
 }
 
+const preparing = new Map<string, Promise<void>>();
+
 export async function prepareDataPaths(paths: DataPaths): Promise<void> {
+  // 같은 경로의 진행 중 작업만 공유한다. 호출마다 루트 링크를 확인하고 완료 뒤 다시 전체 검증한다.
+  await rejectLinks(paths.root);
+  const key = JSON.stringify([paths.root, paths.state, paths.runs, paths.runtime, paths.secret, paths.endpoint]);
+  const pending = preparing.get(key);
+  if (pending) {
+    await pending;
+    for (const path of [paths.root, paths.state, paths.runs, paths.runtime, paths.secret]) await rejectLinks(path);
+    return;
+  }
+  const work = prepareDataPathsOnce(paths);
+  preparing.set(key, work);
+  try { await work; }
+  finally { if (preparing.get(key) === work) preparing.delete(key); }
+}
+
+async function prepareDataPathsOnce(paths: DataPaths): Promise<void> {
   await rejectLinks(paths.root);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await rejectLinks(paths.root);
