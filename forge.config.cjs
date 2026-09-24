@@ -20,6 +20,7 @@ module.exports = {
       description: 'Local software verification for developers and AI coding agents.',
       setupExe: 'CheckMate-개발설치.exe',
       appUserModelId: 'com.squirrel.CheckMate.CheckMate',
+      additionalFiles: [{ src: 'LICENSES.chromium.html', target: 'lib\\net45' }, { src: 'version', target: 'lib\\net45' }],
       vendorDirectory: join(resourceRoot, '..', 'squirrel-vendor'),
     },
   }],
