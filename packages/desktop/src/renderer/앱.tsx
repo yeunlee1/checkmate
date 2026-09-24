@@ -11,7 +11,7 @@ type Bridge = {
 declare global { interface Window { checkmate?: Bridge } }
 
 type PageName = 'projects' | 'checks' | 'history' | 'gaps' | 'settings';
-type ResultTab = 'summary' | 'cases' | 'gaps' | 'repair-bundle';
+type ResultTab = 'summary' | 'cases' | 'requirements' | 'gaps' | 'repair-bundle';
 type Page<T> = { items: T[]; nextCursor: string | null; total: number };
 type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
@@ -23,7 +23,9 @@ type PlanReview = { planId: string; projectId: string; profile: string; fingerpr
 type CatalogChange = { projectId: string; contentHash: string; active: boolean; added: string[]; removed: string[];
   changed: string[]; weakened: string[] };
 type CaseInfo = { testId: string; status: string; requirementId: string | null; expected: string | null;
-  observed: string | null; evidenceIds: string[]; severity: string; location: { file: string; line: number } | null };
+  observed: string | null; evidenceIds: string[]; severity: string; location: { file: string; line: number } | null; truncated?: boolean };
+type RequirementInfo = { requirementId: string; title: string; status: string; checks: string[]; selectedChecks: string[];
+  outsideChecks: string[]; missingChecks: string[]; evidenceIds: string[]; codePaths: string[]; reasons: string[] };
 type Summary = { runId: string; projectId: string; profile: string; state: string; verdict: string | null;
   effectiveVerdict: string | null; finalized: boolean; integrity: 'verified' | 'degraded' | 'pending';
   reusablePassed: boolean; planned: number; required: number; counts: Record<string, number>; reasons: string[];
@@ -46,7 +48,7 @@ const navigation: { id: PageName; label: string; mark: string }[] = [
 ];
 const stateLabels: Record<string, string> = { queued: '대기 중', running: '실행 중', finished: '종료',
   blocked: '차단됨', cancelled: '취소됨', unverifiable: '확인 불가' };
-const verdictLabels: Record<string, string> = { passed: '통과', failed: '실패', incomplete: '미완료', unknown: '확인 불가' };
+const verdictLabels: Record<string, string> = { passed: '통과', failed: '실패', incomplete: '미완료', unknown: '확인 불가', 'out-of-scope': '이번 범위 밖' };
 const caseLabels: Record<string, string> = { passed: '통과', failed: '실패', 'not-run': '미실행', skipped: '건너뜀',
   'timed-out': '시간 초과', interrupted: '중단', unknown: '확인 불가' };
 const reasonLabels: Record<string, string> = { 'run-not-finished': '실행 종료가 확인되지 않았습니다.',
@@ -131,6 +133,7 @@ function CaseCard({ item, onEvidence }: { item: CaseInfo; onEvidence: (id: strin
     <div className="compare"><div><span className="field-label">기대</span><p>{item.expected ?? '기록 없음'}</p></div>
       <div><span className="field-label">관측</span><p>{item.observed ?? '기록 없음'}</p></div></div>
     {item.location && <p className="muted path-line">위치 {item.location.file}:{item.location.line}</p>}
+    {item.truncated && <p className="muted">긴 관측 내용과 증거 목록의 일부만 표시했습니다. 연결된 원본 증거를 확인해 주세요.</p>}
     <div className="evidence-links"><span className="field-label">증거</span>{item.evidenceIds.length === 0 ? <span className="muted">연결된 증거 없음</span>
       : item.evidenceIds.map((id) => <button key={id} type="button" className="link-button" onClick={() => onEvidence(id)}>{short(id, 14)}</button>)}</div>
   </article>;
@@ -163,6 +166,9 @@ export function App() {
   const [cases, setCases] = useState<CaseInfo[]>([]);
   const [casesCursor, setCasesCursor] = useState<string | null>(null);
   const [casesTotal, setCasesTotal] = useState(0);
+  const [requirements, setRequirements] = useState<RequirementInfo[]>([]);
+  const [requirementsCursor, setRequirementsCursor] = useState<string | null>(null);
+  const [requirementsTotal, setRequirementsTotal] = useState(0);
   const [runGaps, setRunGaps] = useState<Gap[]>([]);
   const [runGapsCursor, setRunGapsCursor] = useState<string | null>(null);
   const [runGapsTotal, setRunGapsTotal] = useState(0);
@@ -366,6 +372,8 @@ export function App() {
     await action(`result-${next}`, async () => {
       if (next === 'cases') { const result = await request<Page<CaseInfo>>('result', { runId, section: next });
         setCases(result.items); setCasesCursor(result.nextCursor); setCasesTotal(result.total); }
+      if (next === 'requirements') { const result = await request<Page<RequirementInfo>>('result', { runId, section: next });
+        setRequirements(result.items); setRequirementsCursor(result.nextCursor); setRequirementsTotal(result.total); }
       if (next === 'gaps') { const result = await request<Page<Gap>>('result', { runId, section: next });
         setRunGaps(result.items); setRunGapsCursor(result.nextCursor); setRunGapsTotal(result.total); }
       if (next === 'repair-bundle') { const result = await request<Page<RepairItem>>('result', { runId, section: next });
@@ -377,6 +385,8 @@ export function App() {
     await action('more-results', async () => {
       if (resultTab === 'cases' && casesCursor) { const result = await request<Page<CaseInfo>>('result',
         { runId, section: 'cases', cursor: casesCursor }); setCases([...cases, ...result.items]); setCasesCursor(result.nextCursor); }
+      if (resultTab === 'requirements' && requirementsCursor) { const result = await request<Page<RequirementInfo>>('result',
+        { runId, section: 'requirements', cursor: requirementsCursor }); setRequirements([...requirements, ...result.items]); setRequirementsCursor(result.nextCursor); }
       if (resultTab === 'gaps' && runGapsCursor) { const result = await request<Page<Gap>>('result',
         { runId, section: 'gaps', cursor: runGapsCursor }); setRunGaps([...runGaps, ...result.items]); setRunGapsCursor(result.nextCursor); }
       if (resultTab === 'repair-bundle' && repairCursor) { const result = await request<Page<RepairItem>>('result',
@@ -404,7 +414,7 @@ export function App() {
   }
 
   const title = navigation.find((item) => item.id === page)?.label ?? '프로젝트';
-  const resultNext = resultTab === 'cases' ? casesCursor : resultTab === 'gaps' ? runGapsCursor : repairCursor;
+  const resultNext = resultTab === 'cases' ? casesCursor : resultTab === 'requirements' ? requirementsCursor : resultTab === 'gaps' ? runGapsCursor : repairCursor;
   const recentActive = history.find((item) => !item.finalized && ['queued', 'running'].includes(item.state));
   const recentFinal = history.find((item) => item.finalized);
   return <div className="app-shell">
@@ -504,7 +514,7 @@ export function App() {
             {summary && <Badge value={summary.effectiveVerdict} label={summary.finalized ? verdictLabels[summary.effectiveVerdict ?? ''] ?? '확인 불가' : stateLabels[summary.state] ?? summary.state} />}</div>
             {!summary ? <p className="loading" role="status">실행 상태를 읽는 중입니다…</p> : <><div className="run-state" aria-live="polite"><div><strong>{stateLabels[summary.state] ?? summary.state}</strong><span>{summary.finalized ? '최종 결과가 저장되었습니다.' : '실행 중입니다. 종료 확인 후 판정이 확정됩니다.'}</span></div>
               {!summary.finalized && <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? '취소 요청됨 · 종료 확인 중' : '실행 취소 요청'}</button>}</div>
-              <div className="result-tabs" role="tablist" aria-label="결과 보기">{([{ id: 'summary', label: '요약' }, { id: 'cases', label: '검사 결과' },
+              <div className="result-tabs" role="tablist" aria-label="결과 보기">{([{ id: 'summary', label: '요약' }, { id: 'cases', label: '검사 결과' }, { id: 'requirements', label: '요구사항 근거' },
                 { id: 'gaps', label: '미검증' }, { id: 'repair-bundle', label: 'AI 수정 자료 묶음' }] as { id: ResultTab; label: string }[]).map((tab) =>
                 <button type="button" role="tab" aria-selected={resultTab === tab.id} className={resultTab === tab.id ? 'result-tab active' : 'result-tab'} key={tab.id}
                   onClick={() => void selectResultTab(tab.id)}>{tab.label}</button>)}</div>
@@ -526,6 +536,17 @@ export function App() {
               {resultTab === 'cases' && <div className="result-body"><p className="page-count">전체 {casesTotal}건 · 표시 {cases.length}건</p>
                 {cases.length ? cases.map((item) => <CaseCard key={item.testId} item={item} onEvidence={(id) => void showEvidence(id)} />)
                   : <Empty title="검사 결과가 없습니다" body="실행 상태와 계획 범위를 확인하세요." />}</div>}
+              {resultTab === 'requirements' && <div className="result-body"><p className="page-count">요구사항 {requirementsTotal}건 · 표시 {requirements.length}건</p>
+                <p className="muted">실행 당시 등록한 필수 검사와 근거를 기준으로 표시합니다. 이번 프로필 밖의 필수 검사가 남으면 완료로 표시하지 않습니다.</p>
+                {requirements.map(item => <article className="case-card" key={item.requirementId}>
+                  <div className="case-head"><div><strong>{item.title}</strong><span className="muted">{item.requirementId}</span></div><Badge value={item.status} /></div>
+                  <p>등록 검사 {item.checks.length}개 · 이번 범위 {item.selectedChecks.length}개 · 범위 밖 {item.outsideChecks.length}개</p>
+                  {item.missingChecks.length > 0 && <p className="alert-text">완료 근거가 부족한 검사 {item.missingChecks.join(', ')}</p>}
+                  {item.checks.length === 0 && <p className="alert-text">연결된 검사가 없습니다.</p>}
+                  {item.codePaths.length > 0 && <p className="muted path-line">코드 위치 {item.codePaths.join(', ')}</p>}
+                  <div className="evidence-links">{item.evidenceIds.map(id => <button key={id} type="button" className="link-button" onClick={() => void showEvidence(id)}>{short(id, 14)}</button>)}</div>
+                </article>)}
+              </div>}
               {resultTab === 'gaps' && <div className="result-body"><p className="page-count">전체 {runGapsTotal}건 · 표시 {runGaps.length}건</p>
                 {runGaps.length ? <ul className="gap-list">{runGaps.map((gap, index) => <li key={gap.testId ?? index}><strong>{gap.testId ?? '검사 미확인'}</strong><span>{gapLabels[gap.kind] ?? '확인 필요'}</span><Badge value={gap.status ?? 'unknown'} /></li>)}</ul>
                   : <Empty title="미검증 기록이 없습니다" body="현재 실행의 필수 검사에서 추가 미검증 항목이 기록되지 않았습니다." />}</div>}

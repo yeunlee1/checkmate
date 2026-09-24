@@ -28,7 +28,8 @@ export function boundedPage<T>(items: readonly T[], scope: string, cursor?: stri
 }
 
 export function compactCase(item: RunResult['cases'][number]) {
-  return { ...item, expected: item.expected?.slice(0, 384) ?? null, observed: item.observed?.slice(0, 384) ?? null, evidenceIds: item.evidenceIds.slice(0, 10) };
+  return { ...item, expected: item.expected?.slice(0, 384) ?? null, observed: item.observed?.slice(0, 384) ?? null,
+    evidenceIds: item.evidenceIds.slice(0, 10), truncated: (item.expected?.length ?? 0) > 384 || (item.observed?.length ?? 0) > 384 || item.evidenceIds.length > 10 };
 }
 
 export function resultSummary(result: RunResult, integrity: 'verified' | 'degraded' | 'pending' = 'pending') {

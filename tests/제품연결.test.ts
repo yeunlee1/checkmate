@@ -65,6 +65,8 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   const content = result.content as { type: string; text: string }[];
   expect(JSON.parse(content[0]!.text)).toMatchObject({ ok: true, data: { runId, verdict: 'passed', integrity: 'verified' } });
   const cases = (await f.command('result', runId, '--section', 'cases')).response.data.items;
+  const requirements = (await f.command('result', runId, '--section', 'requirements')).response.data.items;
+  expect(requirements).toMatchObject([{ requirementId: 'requirement-1', status: 'passed', selectedChecks: ['check-1'] }]);
   const evidenceId: string = cases[0].evidenceIds[0];
   const evidence = (await f.command('evidence', runId, evidenceId)).response.data.evidence;
   const file = join(f.service.paths.runs, runId, evidence.relativePath);
@@ -72,6 +74,8 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   await writeFile(file, Buffer.concat([before, Buffer.from('changed')]));
   const degraded = (await f.command('result', runId)).response.data;
   expect(degraded).toMatchObject({ verdict: 'passed', effectiveVerdict: 'unknown', integrity: 'degraded', reusablePassed: false });
+  const repairs = (await f.command('result', runId, '--section', 'repair-bundle')).response.data;
+  expect(repairs).toMatchObject({ integrity: 'degraded', items: [{ testId: 'check-1', codePaths: ['scripts/검사.mjs'] }], guidance: { automaticRetry: 0 } });
 }, 30000);
 
 it('비영 종료는 CLI 실패로 남고 변경된 소스에는 기존 승인을 사용할 수 없다', async () => {

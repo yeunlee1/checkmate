@@ -102,7 +102,7 @@ program.command('run').requiredOption('--project <id>').requiredOption('--plan <
     }
   });
 program.command('status <run>').action(async (run: string) => output(await invoke('status', { runId: run })));
-program.command('result <run>').option('--section <name>', 'summary/cases/gaps/repair-bundle.', 'summary').option('--cursor <cursor>').option('--limit <count>')
+program.command('result <run>').option('--section <name>', 'summary/cases/requirements/gaps/repair-bundle.', 'summary').option('--cursor <cursor>').option('--limit <count>')
   .action(async (run: string, opts: Record<string, unknown>) => output(await invoke('result', { runId: run, section: opts.section, ...optionalPage(opts) })));
 program.command('evidence <run> <evidence>').option('--content', '허용된 본문을 조회한다.').option('--cursor <cursor>').option('--limit <bytes>')
   .action(async (run: string, evidence: string, opts: Record<string, unknown>) => output(await invoke('evidence', { runId: run, evidenceId: evidence, content: opts.content === true, ...optionalPage(opts) })));

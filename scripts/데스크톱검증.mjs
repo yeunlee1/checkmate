@@ -71,6 +71,9 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   const stored = await service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'result', input: { runId, section: 'summary' } }, 'human');
   assert.equal(stored.ok, true);
   assert.equal(stored.data.reusablePassed, true);
+  await page.getByRole('tab', { name: '요구사항 근거', exact: true }).click();
+  await expect(page.locator('.case-card').getByText('실제 종료 확인', { exact: true })).toBeVisible();
+  await expect(page.locator('.case-card').getByText('통과', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: '검사 결과', exact: true }).click();
   await expect(page.locator('.case-card')).toHaveCount(1);
   await page.locator('.case-card .evidence-links button').first().click();

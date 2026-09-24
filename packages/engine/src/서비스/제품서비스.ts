@@ -13,6 +13,7 @@ import { RunService } from './실행서비스.js';
 import type { RunExecutor } from './실행서비스.js';
 import type { ClientRole } from '../연결/로컬통신.js';
 import { boundedPage, compactCase, resultSummary } from './조회결과.js';
+import { requirementEvidence } from './요구사항근거.js';
 
 export class ProductService {
   readonly projects: ProjectStore;
@@ -102,10 +103,25 @@ export class ProductService {
         const integrity = await this.integrity(result);
         if (input.section === 'summary') return resultSummary(result, integrity);
         if (input.section === 'cases') return boundedPage(result.cases.map(compactCase), `cases:${input.runId}`, input.cursor, input.limit);
+        const registration = this.db.prepare('SELECT p.id FROM plans p JOIN runs r ON r.plan_id=p.id WHERE r.id=?').get(input.runId) as { id: string };
+        const plan = this.runs.getPlan(registration.id)!;
+        const source = projectSourceSchema.parse(plan.catalog.source);
+        if (input.section === 'requirements') return boundedPage(requirementEvidence(source, result, integrity), `requirements:${input.runId}`, input.cursor, input.limit);
         if (input.section === 'gaps') return boundedPage(this.runGaps(result), `gaps:${input.runId}`, input.cursor, input.limit);
-        const failures = result.cases.filter((item) => item.status !== 'passed').map((item) => ({ ...compactCase(item), instruction: '기대값과 실제 관측 및 필요한 증거를 확인하고 테스트를 약화하지 않은 채 수정해 주세요.' }));
+        const byId = new Map(source.checks.map(check => [check.id, check]));
+        const failures = result.plannedChecks.flatMap(id => {
+          const definition = byId.get(id)!;
+          const item = result.cases.find(candidate => candidate.testId === id);
+          if (item?.status === 'passed' && integrity === 'verified') return [];
+          return [{ ...compactCase(item ?? { testId: id, status: 'not-run', requirementId: definition.requirementId,
+            expected: definition.expected, observed: null, evidenceIds: [], severity: 'warning', location: null }),
+            codePaths: definition.codePaths, integrity, missingObservation: !item,
+            instruction: '기대값과 실제 관측 및 필요한 증거를 확인하고 테스트를 약화하지 않은 채 수정해 주세요.' }];
+        });
         return { runId: result.runId, planHash: result.planHash, sourceBefore: result.sourceBefore, sourceAfter: result.sourceAfter,
-          integrity, reasons: result.reasons, ...boundedPage(failures, `repair:${input.runId}`, input.cursor, input.limit ?? 5, 4500) };
+          integrity, reasons: result.reasons, guidance: { untrustedEvidence: true, automaticRetry: 0, suggestedRepairAttempts: 2, suggestedBudgetMinutes: 15,
+            nextAction: '코드와 검사를 보완한 뒤 원본 변경을 다시 확인하고 새 계획으로 실행해 주세요. 기준 약화는 사람의 확인이 필요합니다.' },
+          ...boundedPage(failures, `repair:${input.runId}`, input.cursor, input.limit ?? 5, 4500) };
       }
       case 'evidence': {
         const input = apiInputs.evidence.parse(raw);
