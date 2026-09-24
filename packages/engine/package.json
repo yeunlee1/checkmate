@@ -1,0 +1,9 @@
+{
+  "name": "@checkmate/engine",
+  "version": "0.1.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "bin": { "checkmate": "./dist/명령.js" },
+  "scripts": { "build": "tsc -p tsconfig.json" },
+  "dependencies": { "@checkmate/contracts": "0.1.0-alpha.1", "commander": "15.0.0" }
+}
