@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "대표 합성 검증",
+  "repositoryIdentity": "checkmate:synthetic:representative",
+  "commands": [
+    { "id": "run-normal", "title": "정상 합성 앱 검사", "runtime": "node", "entry": "tests/검사.mjs", "args": ["normal"], "timeoutMs": 45000, "env": { "NODE_ENV": "test" }, "writes": [], "resultFormat": "ndjson" },
+    { "id": "run-defect", "title": "의도적 결함 앱 검사", "runtime": "node", "entry": "tests/검사.mjs", "args": ["defect"], "timeoutMs": 45000, "env": { "NODE_ENV": "test" }, "writes": [], "resultFormat": "ndjson" }
+  ],
+  "profiles": [
+    { "id": "normal", "title": "정상 근거", "checkIds": ["normal-workflow", "normal-exposure", "normal-design", "normal-accessibility", "normal-detection"] },
+    { "id": "defect", "title": "의도적 결함", "checkIds": ["defect-workflow", "defect-exposure", "defect-design", "defect-accessibility", "defect-detection"] }
+  ]
+}

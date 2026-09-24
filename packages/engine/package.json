@@ -7,6 +7,22 @@
     "./client": {
       "types": "./dist/서비스/클라이언트.d.ts",
       "import": "./dist/서비스/클라이언트.js"
+    },
+    "./report": {
+      "types": "./dist/서비스/보고서내보내기.d.ts",
+      "import": "./dist/서비스/보고서내보내기.js"
+    },
+    "./reporter": {
+      "types": "./dist/어댑터/리포터.d.ts",
+      "import": "./dist/어댑터/리포터.js"
+    },
+    "./browser": {
+      "types": "./dist/어댑터/브라우저검사.d.ts",
+      "import": "./dist/어댑터/브라우저검사.js"
+    },
+    "./exposure": {
+      "types": "./dist/어댑터/정보노출검사.d.ts",
+      "import": "./dist/어댑터/정보노출검사.js"
     }
   },
   "bin": {
