@@ -96,7 +96,7 @@ export class RunService {
     } catch {
       // 실행기 오류의 세부 정보는 결과에 복사하지 않는다.
     }
-    if (local.cancelled) return this.store.finalizeRun(this.finish(running, 'cancelled'));
+    if (local.cancelled) return this.store.finalizeRun(this.finish(candidate && this.validCandidate(running, candidate) ? candidate : running, 'cancelled'));
     if (!candidate || !this.validCandidate(running, candidate))
       return this.store.finalizeRun(this.finish(running, 'unverifiable'));
     let final: RunResult;
@@ -122,8 +122,9 @@ export class RunService {
   private finish(result: RunResult, state: RunResult['state']): RunResult {
     const final: RunResult = {
       ...result, state, finalized: true, verdict: null, reasons: [],
-      ...(state === 'cancelled' || state === 'unverifiable' ? {
-        workerExitCode: null, environmentVerified: null, evidenceVerified: null, cleanupVerified: null,
+      ...((state === 'cancelled' || state === 'unverifiable') && ['queued', 'running'].includes(result.state) ? {
+        workerExitCode: null, environmentVerified: null, evidenceVerified: null,
+        cleanupVerified: state === 'cancelled' && result.state === 'queued' ? true : null,
       } : {}),
     };
     const assessment = assessResult(final);

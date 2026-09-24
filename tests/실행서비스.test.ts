@@ -86,6 +86,22 @@ test('취소 신호를 받은 실행은 통과 결과를 반환해도 cancelled�
   expect(result.state).toBe('cancelled');
   expect(result.verdict).not.toBe('passed');
   expect(signalSeen).toBe(true);
+  expect(result.cleanupVerified).toBe(true);
+  expect(result.workerExitCode).toBe(0);
+});
+
+test('취소 전에 관측된 실패와 실제 정리 근거를 지우지 않는다', async () => {
+  const { plan, service } = await setup(async (_plan, initial, signal) => {
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    const result = passed(initial);
+    result.cases[0]!.status = 'failed';
+    result.cases[0]!.observed = '취소 전 관측한 불일치';
+    return result;
+  });
+  const run = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  await Promise.resolve();
+  expect(await service.cancel(run.runId)).toMatchObject({ state: 'cancelled', verdict: 'failed', cleanupVerified: true,
+    cases: [{ status: 'failed', observed: '취소 전 관측한 불일치' }] });
 });
 
 test('실행기 예외와 고정 계획 변조를 unverifiable로 보존한다', async () => {
@@ -143,6 +159,7 @@ test('두 작업 폴더의 실행을 직렬화하고 대기 중 취소한 실행
     release();
   }
   expect(immediate?.[0].state).toBe('cancelled');
+  expect(immediate?.[0].cleanupVerified).toBe(true);
   expect(immediate?.[1].state).toBe('cancelled');
   expect(started).toEqual([first.runId]);
   expect((await service.wait(first.runId)).verdict).toBe('passed');
