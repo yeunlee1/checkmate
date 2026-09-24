@@ -29,6 +29,8 @@ it('증거 손상과 가져온 과거 결과 및 미확인 실행은 요구사�
     expect(requirementEvidence(source(), result, 'verified')[0]?.status).toBe('unknown');
   }
   expect(requirementEvidence(source(), completeResult(), 'degraded')[0]?.status).toBe('unknown');
+  const imported = completeResult({ origin: 'imported', verdict: 'unknown', plannedChecks: [], requiredChecks: [], cases: [] });
+  expect(requirementEvidence(source(), imported, 'verified').every(item => item.status === 'unknown' && item.reasons.includes('imported-evidence'))).toBe(true);
 });
 
 it('관측한 실패는 미확인 근거와 함께 있어도 실패로 남는다', () => {

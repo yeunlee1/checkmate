@@ -21,10 +21,11 @@ export function requirementEvidence(source: ProjectSource, result: RunResult, in
     const cases = selectedChecks.flatMap(id => observations.get(id) ?? []);
     const reasons: string[] = [];
     let status: RequirementEvidence['status'];
-    if (cases.some(item => item.status === 'failed')) { status = 'failed'; reasons.push('check-failed'); }
+    if (result.origin === 'imported') { status = 'unknown'; reasons.push('imported-evidence'); }
+    else if (cases.some(item => item.status === 'failed')) { status = 'failed'; reasons.push('check-failed'); }
     else if (checks.length === 0 || requiredChecks.length === 0) { status = 'incomplete'; reasons.push('missing-test'); }
     else if (selectedChecks.length === 0) { status = 'out-of-scope'; reasons.push('profile-outside'); }
-    else if (result.origin !== 'live' || integrity !== 'verified' || !result.finalized || result.state === 'unverifiable') {
+    else if (integrity !== 'verified' || !result.finalized || result.state === 'unverifiable') {
       status = 'unknown'; reasons.push('evidence-unconfirmed');
     } else if (missingChecks.length || result.verdict !== 'passed') {
       status = 'incomplete'; reasons.push(missingChecks.some(id => !selected.has(id)) ? 'profile-partial' : 'required-checks-incomplete');
