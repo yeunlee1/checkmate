@@ -1,7 +1,7 @@
 // 전용 자료 폴더의 권한과 여러 클라이언트의 단일 서비스 시작을 검증한다.
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -145,7 +145,24 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
   const clientUrl = pathToFileURL(resolve('packages/engine/dist/서비스/클라이언트.js')).href;
   const serviceUrl = pathToFileURL(resolve('packages/engine/dist/서비스/상주서비스.js')).href;
   const entry = join(paths.root, '시험서비스.mjs');
-  await writeFile(entry, `// 합성 서비스의 짧은 유휴 종료 시간을 설정한다.\nimport { startLocalService } from '${serviceUrl}';\nawait startLocalService(undefined, 2000);\n`);
+  await writeFile(entry, [
+    '// 합성 서비스의 시작 결과를 시험 폴더에 남기고 짧은 유휴 종료 시간을 설정한다.',
+    "import { writeFile } from 'node:fs/promises';",
+    "import { join } from 'node:path';",
+    "const diagnosis = join(process.env.CHECKMATE_DATA_DIR, 'runtime', '합성서비스-' + process.pid + '.json');",
+    "const record = (value) => writeFile(diagnosis, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), ...value }), { mode: 0o600 });",
+    "const safe = (value) => String(value ?? '').replace(/[0-9a-f]{64}/gi, '[비밀 제외]');",
+    "await record({ state: 'starting' });",
+    'try {',
+    `  const { startLocalService } = await import('${serviceUrl}');`,
+    '  await startLocalService(undefined, 2000);',
+    "  await record({ state: 'ready' });",
+    '} catch (error) {',
+    "  await record({ state: 'failed', code: safe(error?.code), name: safe(error?.name), message: safe(error?.message), stack: safe(error?.stack) });",
+    '  process.exitCode = 5;',
+    '}',
+    '',
+  ].join('\n'));
   const script = `import { callService } from '${clientUrl}'; import { readFileSync } from 'node:fs'; import { join } from 'node:path'; import Database from 'better-sqlite3'; import { randomUUID } from 'node:crypto'; const root=process.argv[1]; const serviceEntry=process.argv[2]; const response=await callService({ apiVersion:1,requestId:randomUUID(),method:'capabilities',input:{} },{dataRoot:root,serviceEntry}); if(!response.ok) throw Error('capabilities'); const owner=JSON.parse(readFileSync(join(root,'runtime','서비스소유.json'),'utf8')); const db=new Database(join(root,'state','checkmate.sqlite'),{readonly:true,fileMustExist:true}); const version=db.prepare('SELECT version FROM schema_migrations').get().version; const file=db.pragma('database_list')[0].file; db.close(); console.log(JSON.stringify({pid:owner.pid,id:owner.id,version,file}));`;
   const runClient = async () => {
     const { stdout } = await execute(process.execPath, ['--input-type=module', '-e', script, paths.root, entry], { timeout: 35000, windowsHide: true })
@@ -154,7 +171,28 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
       });
     return JSON.parse(stdout) as { pid: number; id: string; version: number; file: string };
   };
-  const rows = await Promise.all(Array.from({ length: 4 }, runClient));
+  const results = await Promise.allSettled(Array.from({ length: 4 }, runClient));
+  if (results.some((result) => result.status === 'rejected')) {
+    const attempts = await Promise.all((await readdir(paths.runtime)).filter((name) => /^합성서비스-\d+\.json$/.test(name)).map(async (name) => {
+      const record = await readFile(join(paths.runtime, name), 'utf8').then((value) => JSON.parse(value) as { pid: number; state: string })
+        .catch((error: { code?: string }) => ({ pid: Number(name.match(/\d+/)?.[0]), state: 'unreadable', error: error.code ?? 'invalid-record' }));
+      let alive = true;
+      try { process.kill(record.pid, 0); } catch { alive = false; }
+      return { ...record, alive };
+    }));
+    const ownerFile = join(paths.runtime, '서비스소유.json');
+    const owner = await readFile(ownerFile, 'utf8').then((value) => JSON.parse(value) as { pid: number; id: string })
+      .catch((error: { code?: string }) => ({ error: error.code ?? 'invalid-owner' }));
+    let ownerAlive: boolean | null = null;
+    if ('pid' in owner) {
+      try { process.kill(owner.pid, 0); ownerAlive = true; } catch { ownerAlive = false; }
+    }
+    const summary = { clients: results.map((result, index) => result.status === 'fulfilled'
+      ? { index, status: 'fulfilled', ...result.value }
+      : { index, status: 'rejected', error: String(result.reason) }), attempts, owner, ownerAlive };
+    throw new Error(`독립 클라이언트 시작 진단. ${JSON.stringify(summary).replace(/[0-9a-f]{64}/gi, '[비밀 제외]')}`);
+  }
+  const rows = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
   expect(new Set(rows.map((row) => row.pid)).size).toBe(1);
   expect(new Set(rows.map((row) => row.id)).size).toBe(1);
   expect(new Set(rows.map((row) => row.file)).size).toBe(1);
