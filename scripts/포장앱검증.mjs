@@ -3,26 +3,36 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, mkdir, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { cp, lstat, mkdir, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { _electron } from 'playwright';
 import { expect } from '@playwright/test';
 
 if (process.platform !== 'win32' || !process.argv[2]) throw new Error('Windows 포장 앱 폴더를 지정해 주세요.');
+if (process.argv[3] && process.argv[3] !== '--installed') throw new Error('지원하지 않는 검증 옵션입니다.');
+const installed = process.argv[3] === '--installed';
 const root = resolve('.runtime/검증/포장앱', randomUUID());
-const appPath = join(root, '한글 앱');
-const dataRoot = join(root, '관리 자료');
+const appPath = installed ? resolve(process.argv[2]) : join(root, '한글 앱');
+const dataRoot = installed ? join(process.env.LOCALAPPDATA, 'CheckMateData') : join(root, '관리 자료');
 const project = join(root, '합성 프로젝트');
 const projectId = randomUUID();
 const execute = promisify(execFile);
 const env = { ...process.env, CHECKMATE_DATA_DIR: dataRoot, PATH: join(process.env.SystemRoot, 'System32') };
 for (const key of ['ELECTRON_RUN_AS_NODE', 'CHECKMATE_NODE_PATH', 'CHECKMATE_RENDERER_URL', 'NODE_OPTIONS', 'NODE_PATH']) delete env[key];
+if (installed) {
+  delete env.CHECKMATE_DATA_DIR;
+  const child = relative(join(process.env.LOCALAPPDATA, 'CheckMate'), appPath);
+  if (!child || isAbsolute(child) || child === '..' || child.startsWith(`..${sep}`)) throw new Error('사용자 CheckMate 설치 폴더 아래 앱 버전을 지정해 주세요.');
+  await lstat(dataRoot).then(() => { throw new Error('기존 사용자 자료가 있으므로 첫 설치 시험을 실행하지 않습니다.'); }, error => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+}
 let app;
 let runId;
-const report = { passed: false, root, systemNodeOnPath: false };
+const report = { passed: false, root, appPath, dataRoot, installed, systemNodeOnPath: false };
 try {
   await mkdir(root, { recursive: true });
-  await cp(resolve(process.argv[2]), appPath, { recursive: true, errorOnExist: true, force: false });
+  if (!installed) await cp(resolve(process.argv[2]), appPath, { recursive: true, errorOnExist: true, force: false });
   const node = join(appPath, 'resources', 'node', 'node.exe');
   const cli = join(appPath, 'resources', 'engine', 'packages', 'engine', 'dist', '명령.js');
   const command = async (...args) => {
@@ -44,6 +54,10 @@ try {
     const page = await app.firstWindow(); page.setDefaultTimeout(15000); return page;
   };
   let page = await launch();
+  assert.equal((await page.evaluate(() => window.checkmate.connectionInfo())).dataPath, dataRoot);
+  await execute(join(appPath, 'CheckMate.exe'), [`--user-data-dir=${join(root, '화면 자료')}`], { env, windowsHide: true, timeout: 15000 });
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
+  report.singleInstance = true;
   await page.getByRole('button', { name: '로컬 저장소 준비', exact: true }).click();
   await expect(page.getByRole('button', { name: '+ 프로젝트 추가', exact: true })).toBeEnabled({ timeout: 30000 });
   await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, project);
@@ -62,6 +76,7 @@ try {
   assert.equal(report.connection.mcpCommand.command, node);
   await page.screenshot({ path: join(root, '포장앱.png'), fullPage: true });
   await app.close(); app = undefined;
+  console.log(JSON.stringify({ phase: '첫 실행 완료', runId, root }));
   page = await launch();
   await page.getByRole('button').filter({ has: page.getByText('포장 앱 합성 검증', { exact: true }) }).click();
   await expect(page.getByRole('heading', { name: '포장 앱 합성 검증', exact: true })).toBeVisible({ timeout: 30000 });
