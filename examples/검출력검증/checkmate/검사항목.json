@@ -1,0 +1,4 @@
+[
+  { "id": "strong-mutation", "title": "강한 권한 검사 변이", "requirementId": "req-strong-mutation", "commandId": "run-strong", "required": true, "kind": "detection", "expected": "모든 권한 함수 변이가 검출되고 생존 변이가 0개다.", "codePaths": ["권한.mjs", "tests/강한.test.mjs", "tests/검사.mjs"] },
+  { "id": "weak-mutation", "title": "약한 권한 검사 변이", "requirementId": "req-weak-mutation", "commandId": "run-weak", "required": true, "kind": "detection", "expected": "모든 권한 함수 변이가 검출되고 생존 변이가 0개다.", "codePaths": ["권한.mjs", "tests/약한.test.mjs", "tests/검사.mjs"] }
+]

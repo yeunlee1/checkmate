@@ -20,6 +20,10 @@
       "types": "./dist/어댑터/브라우저검사.d.ts",
       "import": "./dist/어댑터/브라우저검사.js"
     },
+    "./mutation": {
+      "types": "./dist/어댑터/검출력검사.d.ts",
+      "import": "./dist/어댑터/검출력검사.js"
+    },
     "./exposure": {
       "types": "./dist/어댑터/정보노출검사.d.ts",
       "import": "./dist/어댑터/정보노출검사.js"
