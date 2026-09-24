@@ -46,6 +46,16 @@ async function fixture(exitCode = 0) {
 it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증거를 조회한다', async () => {
   const f = await fixture();
   expect((await f.command('register', f.root, '--trust')).response.ok).toBe(true);
+  const reportPath = join(f.dataRoot, '..', '과거보고서.json');
+  await writeFile(reportPath, JSON.stringify({ mode: 'quick', status: 'passed', source: { fingerprint: 'a'.repeat(64) },
+    sourceAfter: { fingerprint: 'a'.repeat(64) }, steps: [{ id: 'types', status: 'passed', exitCode: 0 }], omitted: [] }));
+  const imported = (await f.command('import-history', reportPath, '--project', f.projectId)).response;
+  expect(imported).toMatchObject({ ok: true, data: { origin: 'imported', reportedStatus: 'passed', effectiveVerdict: 'unknown', reused: false } });
+  expect((await f.command('import-history', reportPath, '--project', f.projectId)).response.data).toMatchObject({ runId: imported.data.runId, reused: true });
+  expect((await f.command('result', imported.data.runId, '--section', 'requirements')).response.data.items).toMatchObject([{ status: 'unknown' }]);
+  expect((await f.command('result', imported.data.runId, '--section', 'imported')).response.data).toMatchObject({ reportedStatus: 'passed', reusablePassed: false, items: [{ id: 'types' }] });
+  expect(await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'import-history', input: { projectId: f.projectId, path: reportPath } }, 'agent'))
+    .toMatchObject({ ok: false, error: { code: 'human-action-required' } });
   const plan = (await f.command('inspect', '--project', f.projectId)).response.data;
   const requestId = randomUUID();
   const runArgs = ['run', '--project', f.projectId, '--plan', plan.planId, '--request-id', requestId];
@@ -67,6 +77,9 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   const cases = (await f.command('result', runId, '--section', 'cases')).response.data.items;
   const requirements = (await f.command('result', runId, '--section', 'requirements')).response.data.items;
   expect(requirements).toMatchObject([{ requirementId: 'requirement-1', status: 'passed', selectedChecks: ['check-1'] }]);
+  const reportOutput = join(f.dataRoot, '..', '검증보고서.html');
+  expect((await f.command('export', runId, '--output', reportOutput)).response.ok).toBe(true);
+  expect(await readFile(reportOutput, 'utf8')).toContain('체크메이트 검증 보고서');
   const backup = (await f.command('backup')).response;
   expect(backup).toMatchObject({ ok: true, data: { includesConnectionSecret: false } });
   const restoredRoot = join(f.dataRoot, '..', '복구 자료');

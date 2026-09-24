@@ -13,10 +13,11 @@ export const apiInputs = {
   approve: z.strictObject({ planId: uuid, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
   start: z.strictObject({ projectId: uuid, planId: uuid }),
   status: z.strictObject({ runId: uuid }),
-  result: z.strictObject({ runId: uuid, section: z.enum(['summary', 'cases', 'requirements', 'gaps', 'repair-bundle']).default('summary'), ...pagination }),
+  result: z.strictObject({ runId: uuid, section: z.enum(['summary', 'cases', 'requirements', 'gaps', 'repair-bundle', 'imported']).default('summary'), ...pagination }),
   evidence: z.strictObject({ runId: uuid, evidenceId: uuid, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1024).max(32768).optional(), content: z.boolean().default(false) }),
   cancel: z.strictObject({ runId: uuid }),
   history: z.strictObject({ projectId: uuid, ...pagination }),
+  'import-history': z.strictObject({ projectId: uuid, path: z.string().min(1).max(4096) }),
   gaps: z.strictObject({ projectId: uuid, ...pagination }),
   sync: z.strictObject({ projectId: uuid }),
   activate: z.strictObject({ projectId: uuid, contentHash: z.string().regex(/^[a-f0-9]{64}$/) }),
@@ -38,7 +39,7 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history']);
 
 export class ServiceError extends Error {
   constructor(readonly code: string, message = '요청을 처리할 수 없습니다.', readonly retryable = false, readonly nextAction = '입력과 현재 상태를 확인해 주세요.') {

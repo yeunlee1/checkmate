@@ -17,8 +17,9 @@ import { boundedPage, compactCase, resultSummary } from './조회결과.js';
 import { requirementEvidence } from './요구사항근거.js';
 import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
 import type { DataPaths } from '../연결/개인경로.js';
+import { getImportedHistory, importHistory, ImportHistoryError } from '../저장/가져온이력.js';
 
-const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore']);
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history']);
 
 export class ProductService {
   readonly projects: ProjectStore;
@@ -47,7 +48,8 @@ export class ProductService {
       }
       const data = await this.dispatch(request);
       return { apiVersion: 1, requestId: request.requestId, ok: true, data };
-    } catch (error) { return errorResponse(request.requestId, error instanceof BackupError
+    } catch (error) { return errorResponse(request.requestId, error instanceof ImportHistoryError
+      ? new ServiceError(error.code, error.message) : error instanceof BackupError
       ? new ServiceError(error.code, error.message, false, '백업의 완성 표식과 복구 대상이 새 빈 폴더인지 확인해 주세요.') : error); }
     finally { if (writing) this.writing -= 1; }
   }
@@ -98,7 +100,7 @@ export class ProductService {
         if (!this.projects.hasApproval(input.planId)) throw new ServiceError('needs-approval', '이 계획의 명령과 쓰기 범위에 대한 확인이 필요합니다.', false, '사람용 계획 화면 또는 CLI approve에서 정확한 지문을 확인해 주세요.');
         const current = await readProjectSource(plan.workspace.realPath);
         if (current.sourceHash !== plan.plan.sourceHash || current.contentHash !== plan.catalog.contentHash) throw new ServiceError('plan-stale');
-        const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.state='unverifiable'
+        const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state='unverifiable'
           AND json_extract(r.summary_json,'$.cleanupVerified') IS NOT 1 LIMIT 1`).get(plan.workspace.id);
         if (unresolved) throw new ServiceError('ownership-unknown', '이전 실행의 정리가 확인되지 않았습니다.');
         const accepted = this.execution.start({ ...input, requestId: request.requestId });
@@ -116,6 +118,14 @@ export class ProductService {
         const result = this.requireRun(input.runId);
         const integrity = await this.integrity(result);
         if (input.section === 'summary') return resultSummary(result, integrity);
+        if (input.section === 'imported') {
+          const imported = getImportedHistory(this.db, result.runId);
+          if (!imported) throw new ServiceError('not-imported', '가져온 보고서가 아닙니다.');
+          return { origin: 'imported', reportedStatus: imported.reportedStatus, effectiveVerdict: 'unknown', reusablePassed: false,
+            mode: imported.mode, environment: imported.environment, source: imported.source, originalSha256: imported.originalSha256,
+            summary: imported.summary, declaredOmissions: imported.omissions.declaredCount,
+            ...boundedPage(imported.steps, `imported:${input.runId}`, input.cursor, input.limit ?? 10, 4000) };
+        }
         if (input.section === 'cases') return boundedPage(result.cases.map(compactCase), `cases:${input.runId}`, input.cursor, input.limit);
         const registration = this.db.prepare('SELECT p.id FROM plans p JOIN runs r ON r.plan_id=p.id WHERE r.id=?').get(input.runId) as { id: string };
         const plan = this.runs.getPlan(registration.id)!;
@@ -152,7 +162,13 @@ export class ProductService {
         const input = apiInputs.history.parse(raw);
         this.projects.get(input.projectId);
         const page = this.runs.listRuns(input.projectId, Math.min(input.limit ?? 10, 10), input.cursor);
-        return { items: page.runs.map((run) => ({ runId: run.runId, profile: run.profile, state: run.state, verdict: run.verdict, finalized: run.finalized })), nextCursor: page.nextCursor };
+        return { items: page.runs.map((run) => ({ runId: run.runId, profile: run.profile, origin: run.origin, state: run.state, verdict: run.verdict, finalized: run.finalized })), nextCursor: page.nextCursor };
+      }
+      case 'import-history': {
+        const input = apiInputs['import-history'].parse(raw);
+        const saved = await importHistory(this.db, input.projectId, input.path);
+        return { runId: saved.runId, reused: saved.reused, origin: 'imported', effectiveVerdict: 'unknown', reportedStatus: saved.report.reportedStatus,
+          originalSha256: saved.report.originalSha256, summary: saved.report.summary, reusablePassed: false };
       }
       case 'gaps': {
         const input = apiInputs.gaps.parse(raw);

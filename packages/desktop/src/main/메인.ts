@@ -2,10 +2,12 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contracts/api';
 import { callService, initializeLocalStore } from '@checkmate/engine/client';
+import { exportRunHtml } from '@checkmate/engine/report';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const dataRoot = process.env.CHECKMATE_DATA_DIR ?? join(app.getPath('appData'), '..', 'Local', 'CheckMate');
@@ -60,7 +62,25 @@ else {
     const result = await dialog.showOpenDialog(window!, { title, properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
+  ipcMain.handle('checkmate:choose-report', async event => {
+    checkSender(event);
+    const result = await dialog.showOpenDialog(window!, { title: '아틀리에 과거 보고서 선택', filters: [{ name: 'JSON 보고서', extensions: ['json'] }], properties: ['openFile'] });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
   ipcMain.handle('checkmate:initialize', async (event) => { checkSender(event); await initializeLocalStore(options()); });
+  ipcMain.handle('checkmate:export', async (event, runId: unknown) => {
+    checkSender(event);
+    const id = randomUUID();
+    try {
+      const request = apiRequestSchema.parse({ apiVersion: 1, requestId: id, method: 'result', input: { runId, section: 'summary' } });
+      const html = await exportRunHtml((method, input) => callService(apiRequestSchema.parse({ ...request, requestId: randomUUID(), method, input }), options()), String(runId));
+      const selected = await dialog.showSaveDialog(window!, { title: '검증 보고서 저장', defaultPath: `검증보고서-${String(runId).slice(0, 8)}.html`, filters: [{ name: 'HTML 보고서', extensions: ['html'] }] });
+      if (selected.canceled || !selected.filePath) return { apiVersion: 1, requestId: id, ok: true, data: { cancelled: true } };
+      await writeFile(selected.filePath, html, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      return { apiVersion: 1, requestId: id, ok: true, data: { path: selected.filePath } };
+    } catch (error) { return errorResponse(id, error instanceof Error && 'code' in error && error.code === 'EEXIST'
+      ? new ServiceError('file-exists', '같은 이름의 파일이 있습니다. 새 파일 이름을 선택해 주세요.') : error); }
+  });
   ipcMain.handle('checkmate:connection-info', async (event) => {
     checkSender(event);
     return { version: app.getVersion(), dataPath: dataRoot, mcpCommand: { command: options().nodeExecutable, args: [cliEntry, '--data-dir', dataRoot, 'mcp'] } };

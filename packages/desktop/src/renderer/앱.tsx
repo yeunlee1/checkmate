@@ -5,13 +5,15 @@ import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 type Bridge = {
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
   chooseDirectory(purpose?: 'backup' | 'restore'): Promise<string | null>;
+  chooseReport(): Promise<string | null>;
   connectionInfo(): Promise<{ version: string; dataPath: string; mcpCommand: { command: string; args: string[] } }>;
   initializeLocalStore(): Promise<void>;
+  exportReport(runId: string): Promise<ApiResponse>;
 };
 declare global { interface Window { checkmate?: Bridge } }
 
 type PageName = 'projects' | 'checks' | 'history' | 'gaps' | 'settings';
-type ResultTab = 'summary' | 'cases' | 'requirements' | 'gaps' | 'repair-bundle';
+type ResultTab = 'summary' | 'cases' | 'requirements' | 'gaps' | 'repair-bundle' | 'imported';
 type Page<T> = { items: T[]; nextCursor: string | null; total: number };
 type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
@@ -26,7 +28,7 @@ type CaseInfo = { testId: string; status: string; requirementId: string | null; 
   observed: string | null; evidenceIds: string[]; severity: string; location: { file: string; line: number } | null; truncated?: boolean };
 type RequirementInfo = { requirementId: string; title: string; status: string; checks: string[]; selectedChecks: string[];
   outsideChecks: string[]; missingChecks: string[]; evidenceIds: string[]; codePaths: string[]; reasons: string[] };
-type Summary = { runId: string; projectId: string; profile: string; state: string; verdict: string | null;
+type Summary = { runId: string; projectId: string; profile: string; origin: 'live' | 'imported'; state: string; verdict: string | null;
   effectiveVerdict: string | null; finalized: boolean; integrity: 'verified' | 'degraded' | 'pending';
   reusablePassed: boolean; planned: number; required: number; counts: Record<string, number>; reasons: string[];
   failures: CaseInfo[]; workerExitCode: number | null; environmentVerified: boolean | null;
@@ -177,6 +179,7 @@ export function App() {
   const [repairTotal, setRepairTotal] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceInspection | null>(null);
   const [evidenceText, setEvidenceText] = useState('');
+  const [importedReport, setImportedReport] = useState<Record<string, unknown> | null>(null);
   const [evidenceCursor, setEvidenceCursor] = useState<string | null>(null);
   const [cancelRequested, setCancelRequested] = useState(false);
   const [connection, setConnection] = useState<ConnectionInfo | null>(null);
@@ -396,6 +399,7 @@ export function App() {
     setResultTab(next); setEvidence(null);
     if (!runId || next === 'summary') return;
     await action(`result-${next}`, async () => {
+      if (next === 'imported') setImportedReport(await request<Record<string, unknown>>('result', { runId, section: next }));
       if (next === 'cases') { const result = await request<Page<CaseInfo>>('result', { runId, section: next });
         setCases(result.items); setCasesCursor(result.nextCursor); setCasesTotal(result.total); }
       if (next === 'requirements') { const result = await request<Page<RequirementInfo>>('result', { runId, section: next });
@@ -530,7 +534,13 @@ export function App() {
                 <p className="page-count">{checks.length} / {checksTotal}개</p>{checksCursor && <button type="button" className="secondary" onClick={() => void action('more-checks', () => loadChecks(project.id, checksCursor))} disabled={!!busy}>검사항목 더 보기</button>}</>}
           </section>}
           {!loading && serviceReady && page === 'history' && <><section className="panel"><div className="panel-heading"><div><h2>실행이력</h2><p>접수와 최종 판정을 구분해 확인하세요.</p></div>
-            {project && <button type="button" className="secondary" onClick={() => void action('refresh-history', () => loadHistory(project.id))} disabled={!!busy}>새로 고침</button>}</div>
+            {project && <div className="detail-actions"><button type="button" className="secondary" onClick={() => void action('import', async () => {
+              const path = await window.checkmate!.chooseReport();
+              if (!path) return;
+              const saved = await request<{ runId: string }>('import-history', { projectId: project.id, path });
+              await loadHistory(project.id); await openRun(saved.runId);
+              setNotice('과거 보고서를 가져왔습니다. 원래 상태는 보존하며 현재 판정은 미확인입니다.');
+            })} disabled={!!busy}>과거 보고서 가져오기</button><button type="button" className="secondary" onClick={() => void action('refresh-history', () => loadHistory(project.id))} disabled={!!busy}>새로 고침</button></div>}</div>
             {!project ? <Empty title="프로젝트를 선택하세요" body="프로젝트를 선택하면 해당 실행이력이 표시됩니다." /> : history.length === 0 ? <Empty title="실행이력이 없습니다" body="프로젝트에서 계획을 확인하고 검사를 실행하세요." />
               : <><div className="history-list">{history.map((item) => <button type="button" className={runId === item.runId ? 'history-row active' : 'history-row'} key={item.runId} onClick={() => void openRun(item.runId)}>
                 <span><strong>{item.profile}</strong><code>{short(item.runId, 21)}</code></span><span>{stateLabels[item.state] ?? item.state}</span><Badge value={item.verdict} /></button>)}</div>
@@ -539,11 +549,20 @@ export function App() {
           {runId && <section className="panel run-panel"><div className="panel-heading"><div><p className="eyebrow">RUN DETAIL</p><h2>실행 결과</h2><CopyValue value={runId} label="실행 ID" /></div>
             {summary && <Badge value={summary.effectiveVerdict} label={summary.finalized ? verdictLabels[summary.effectiveVerdict ?? ''] ?? '확인 불가' : stateLabels[summary.state] ?? summary.state} />}</div>
             {!summary ? <p className="loading" role="status">실행 상태를 읽는 중입니다…</p> : <><div className="run-state" aria-live="polite"><div><strong>{stateLabels[summary.state] ?? summary.state}</strong><span>{summary.finalized ? '최종 결과가 저장되었습니다.' : '실행 중입니다. 종료 확인 후 판정이 확정됩니다.'}</span></div>
-              {!summary.finalized && <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? '취소 요청됨 · 종료 확인 중' : '실행 취소 요청'}</button>}</div>
+              {summary.finalized ? <button type="button" className="secondary" disabled={!!busy} onClick={() => void action('export', async () => {
+                const response = await window.checkmate!.exportReport(runId);
+                if (!response.ok) throw new Error(response.error.message);
+                const saved = response.data as { path?: string };
+                if (saved.path) setNotice(`보고서를 저장했습니다. ${saved.path}`);
+              })}>HTML 보고서 저장</button> : <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? '취소 요청됨 · 종료 확인 중' : '실행 취소 요청'}</button>}</div>
+              {summary.origin === 'imported' && <p className="instruction">가져온 과거 이력입니다. 현재 실행과 요구사항의 통과 근거로 사용하지 않습니다.</p>}
               <div className="result-tabs" role="tablist" aria-label="결과 보기">{([{ id: 'summary', label: '요약' }, { id: 'cases', label: '검사 결과' }, { id: 'requirements', label: '요구사항 근거' },
                 { id: 'gaps', label: '미검증' }, { id: 'repair-bundle', label: 'AI 수정 자료 묶음' }] as { id: ResultTab; label: string }[]).map((tab) =>
                 <button type="button" role="tab" aria-selected={resultTab === tab.id} className={resultTab === tab.id ? 'result-tab active' : 'result-tab'} key={tab.id}
-                  onClick={() => void selectResultTab(tab.id)}>{tab.label}</button>)}</div>
+                  onClick={() => void selectResultTab(tab.id)}>{tab.label}</button>)}
+                {summary.origin === 'imported' && <button type="button" role="tab" aria-selected={resultTab === 'imported'} className={resultTab === 'imported' ? 'result-tab active' : 'result-tab'} onClick={() => void selectResultTab('imported')}>가져온 원래 기록</button>}</div>
+              {resultTab === 'imported' && importedReport && <div className="result-body"><p>원래 보고 상태 · {String(importedReport.reportedStatus)} · 현재 판정은 미확인입니다.</p><pre className="evidence-text">{JSON.stringify(importedReport, null, 2)}</pre>
+                {typeof importedReport.nextCursor === 'string' && <button type="button" className="secondary" disabled={!!busy} onClick={() => void action('imported-next', async () => setImportedReport(await request<Record<string, unknown>>('result', { runId, section: 'imported', cursor: importedReport.nextCursor })))}>원래 단계 다음 구간</button>}</div>}
               {resultTab === 'summary' && <div className="result-body"><div className="metrics"><div><strong>{summary.planned}</strong><span>계획 검사</span></div><div><strong>{summary.required}</strong><span>필수 검사</span></div>
                 <div><strong>{Object.values(summary.counts).reduce((sum, count) => sum + count, 0)}</strong><span>기록된 결과</span></div></div>
                 <div className="count-strip">{Object.entries(summary.counts).map(([status, count]) => <span key={status}>{caseLabels[status] ?? '기타'} {count}건</span>)}</div>
@@ -580,7 +599,7 @@ export function App() {
                 <button type="button" className="secondary" onClick={() => void copyText(JSON.stringify({ runId, items: repairItems, displayed: repairItems.length, total: repairTotal }, null, 2))} disabled={repairItems.length === 0}>현재 표시 자료 복사</button></div>
                 {repairItems.length ? repairItems.map((item) => <div key={item.testId}><CaseCard item={item} onEvidence={(id) => void showEvidence(id)} /><p className="instruction">{item.instruction}</p></div>)
                   : <Empty title="전달할 실패 자료가 없습니다" body="실패나 미검증 결과가 저장되면 여기에 표시됩니다." />}</div>}
-              {resultTab !== 'summary' && resultNext && <button type="button" className="secondary load-more" onClick={() => void moreResults()} disabled={!!busy}>상세 항목 더 보기</button>}
+              {resultTab !== 'summary' && resultTab !== 'imported' && resultNext && <button type="button" className="secondary load-more" onClick={() => void moreResults()} disabled={!!busy}>상세 항목 더 보기</button>}
               {evidence && <aside className="evidence-panel" aria-label="증거 상세"><div className="panel-heading"><h3>증거 확인</h3><button className="text-button" type="button" onClick={() => setEvidence(null)}>닫기</button></div>
                 <dl className="detail-grid"><div><dt>파일</dt><dd className="path-line">{evidence.evidence.relativePath}</dd></div><div><dt>형식</dt><dd>{evidence.evidence.mime}</dd></div>
                   <div><dt>무결성</dt><dd><Badge value={evidence.integrity} label={evidence.integrity === 'verified' ? '확인됨' : '손상 또는 부족'} /></dd></div>

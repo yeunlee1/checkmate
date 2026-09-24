@@ -2,12 +2,15 @@
 // 사람과 AI가 같은 로컬 서비스의 계획과 실행 및 결과를 사용하게 한다.
 import { Command, CommanderError } from 'commander';
 import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contracts/api';
 import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 import { ReportError, validateReport } from './보고서.js';
 import { callService, initializeLocalStore } from './서비스/클라이언트.js';
 import { startAgentServer } from './연결/에이아이서버.js';
+import { exportRunHtml } from './서비스/보고서내보내기.js';
 
 const program = new Command();
 let jsonMode = false;
@@ -102,6 +105,14 @@ program.command('run').requiredOption('--project <id>').requiredOption('--plan <
     }
   });
 program.command('status <run>').action(async (run: string) => output(await invoke('status', { runId: run })));
+program.command('export <run>').description('확정 결과를 단일 HTML 보고서로 저장한다.')
+  .requiredOption('--output <path>', '새 HTML 파일 경로. 기존 파일은 덮어쓰지 않는다.')
+  .action(async (run: string, opts: { output: string }) => {
+    const html = await exportRunHtml(invoke, run);
+    const path = resolve(opts.output);
+    await writeFile(path, html, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    write({ path, byteLength: Buffer.byteLength(html, 'utf8') }, `보고서를 저장했습니다. ${path}`);
+  });
 program.command('backup').description('현재 유휴 저장소와 증거를 함께 백업한다.').action(async () => output(await invoke('backup', {})));
 program.command('restore <backup>').description('검증된 백업을 새 빈 폴더로 복구한다. 현재 자료는 유지한다.')
   .requiredOption('--target <path>', '새 빈 자료 폴더의 절대 경로.').option('--confirm', '복구 대상과 자료 생성을 확인한다.')
@@ -109,7 +120,9 @@ program.command('restore <backup>').description('검증된 백업을 새 빈 폴
     if (!opts.confirm) throw new ServiceError('needs-approval', '복구 경로를 확인한 뒤 --confirm을 지정해 주세요.');
     output(await invoke('restore', { backupDirectory: backup, targetRoot: opts.target, confirm: true }));
   });
-program.command('result <run>').option('--section <name>', 'summary/cases/requirements/gaps/repair-bundle.', 'summary').option('--cursor <cursor>').option('--limit <count>')
+program.command('import-history <path>').description('아틀리에 과거 보고서의 안전 요약을 미확인 이력으로 가져온다.')
+  .requiredOption('--project <id>').action(async (path: string, opts: { project: string }) => output(await invoke('import-history', { projectId: opts.project, path })));
+program.command('result <run>').option('--section <name>', 'summary/cases/requirements/gaps/repair-bundle/imported.', 'summary').option('--cursor <cursor>').option('--limit <count>')
   .action(async (run: string, opts: Record<string, unknown>) => output(await invoke('result', { runId: run, section: opts.section, ...optionalPage(opts) })));
 program.command('evidence <run> <evidence>').option('--content', '허용된 본문을 조회한다.').option('--cursor <cursor>').option('--limit <bytes>')
   .action(async (run: string, evidence: string, opts: Record<string, unknown>) => output(await invoke('evidence', { runId: run, evidenceId: evidence, content: opts.content === true, ...optionalPage(opts) })));
