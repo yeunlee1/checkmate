@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { apiInputs, errorResponse, humanMethods, ServiceError } from '@checkmate/contracts/api';
 import type { ApiRequest, ApiResponse } from '@checkmate/contracts/api';
 import type { RunResult } from '@checkmate/contracts';
+import type { ProjectSource } from '@checkmate/contracts/project';
 import { projectSourceSchema } from '@checkmate/contracts/project';
 import { readProjectSource } from '../프로젝트/원본읽기.js';
 import { SQLiteRunStore } from '../저장/실행저장.js';
@@ -19,7 +20,7 @@ import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
 import type { DataPaths } from '../연결/개인경로.js';
 import { getImportedHistory, importHistory, ImportHistoryError } from '../저장/가져온이력.js';
 
-const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history']);
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup']);
 
 export class ProductService {
   readonly projects: ProjectStore;
@@ -100,8 +101,9 @@ export class ProductService {
         if (!this.projects.hasApproval(input.planId)) throw new ServiceError('needs-approval', '이 계획의 명령과 쓰기 범위에 대한 확인이 필요합니다.', false, '사람용 계획 화면 또는 CLI approve에서 정확한 지문을 확인해 주세요.');
         const current = await readProjectSource(plan.workspace.realPath);
         if (current.sourceHash !== plan.plan.sourceHash || current.contentHash !== plan.catalog.contentHash) throw new ServiceError('plan-stale');
-        const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state='unverifiable'
-          AND json_extract(r.summary_json,'$.cleanupVerified') IS NOT 1 LIMIT 1`).get(plan.workspace.id);
+        const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state IN ('unverifiable','cancelled')
+          AND json_extract(r.summary_json,'$.cleanupVerified') IS NOT 1
+          AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=r.id AND a.action='cleanup-acknowledged' AND a.actor_kind='human') LIMIT 1`).get(plan.workspace.id);
         if (unresolved) throw new ServiceError('ownership-unknown', '이전 실행의 정리가 확인되지 않았습니다.');
         const accepted = this.execution.start({ ...input, requestId: request.requestId });
         this.pending.add(accepted.runId);
@@ -131,7 +133,7 @@ export class ProductService {
         const plan = this.runs.getPlan(registration.id)!;
         const source = projectSourceSchema.parse(plan.catalog.source);
         if (input.section === 'requirements') return boundedPage(requirementEvidence(source, result, integrity), `requirements:${input.runId}`, input.cursor, input.limit);
-        if (input.section === 'gaps') return boundedPage(this.runGaps(result), `gaps:${input.runId}`, input.cursor, input.limit);
+        if (input.section === 'gaps') return boundedPage(this.runGaps(result, source, integrity), `gaps:${input.runId}`, input.cursor, input.limit);
         const byId = new Map(source.checks.map(check => [check.id, check]));
         const failures = result.plannedChecks.flatMap(id => {
           const definition = byId.get(id)!;
@@ -153,10 +155,38 @@ export class ProductService {
         return input.content ? this.evidence.readText(input.runId, input.evidenceId, { ...(input.cursor === undefined ? {} : { cursor: input.cursor }), ...(input.limit === undefined ? {} : { limit: input.limit }) })
           : this.evidence.inspect(input.runId, input.evidenceId);
       }
+      case 'evidence-image': {
+        const input = apiInputs['evidence-image'].parse(raw);
+        this.requireRun(input.runId);
+        return this.evidence.readImage(input.runId, input.evidenceId, input.cursor ? { cursor: input.cursor } : {});
+      }
       case 'cancel': {
         const input = apiInputs.cancel.parse(raw);
         const result = await this.execution.cancel(input.runId);
         return resultSummary(result);
+      }
+      case 'acknowledge-cleanup': {
+        const input = apiInputs['acknowledge-cleanup'].parse(raw);
+        return this.db.transaction(() => {
+          const row = this.db.prepare('SELECT workspace_id,summary_json FROM runs WHERE id=?').get(input.runId) as
+            { workspace_id: string; summary_json: string } | undefined;
+          if (!row) throw new ServiceError('run-not-found');
+          const run = this.requireRun(input.runId);
+          if (run.origin !== 'live' || !run.finalized || !['unverifiable', 'cancelled'].includes(run.state)
+            || run.cleanupVerified === true) throw new ServiceError('invalid-state', '수동 정리 확인 대상 실행이 아닙니다.');
+          const busy = this.db.prepare("SELECT 1 FROM runs WHERE workspace_id=? AND state IN ('queued','running') LIMIT 1")
+            .get(row.workspace_id);
+          if (busy) throw new ServiceError('workspace-busy', '같은 작업 폴더의 실행이 끝난 뒤 확인해 주세요.');
+          const prior = this.db.prepare("SELECT id FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged' AND actor_kind='human' LIMIT 1")
+            .get(run.runId);
+          if (prior) return { runId: run.runId, acknowledged: true, reused: true, originalVerdict: run.verdict };
+          this.db.prepare(`INSERT INTO audit_events
+            (id,action,actor_kind,entity_id,before_hash,after_hash,approval_id,recorded_at,detail_json)
+            VALUES (?,'cleanup-acknowledged','human',?,NULL,?,NULL,?,?)`)
+            .run(randomUUID(), run.runId, createHash('sha256').update(row.summary_json).digest('hex'),
+              new Date().toISOString(), JSON.stringify({ note: input.note, manualConfirmation: true }));
+          return { runId: run.runId, acknowledged: true, reused: false, originalVerdict: run.verdict };
+        })();
       }
       case 'history': {
         const input = apiInputs.history.parse(raw);
@@ -173,7 +203,7 @@ export class ProductService {
       case 'gaps': {
         const input = apiInputs.gaps.parse(raw);
         this.projects.get(input.projectId);
-        const rows = this.db.prepare('SELECT id,requirement_id AS requirementId,opened_run_id AS openedRunId,kind,state,detail_json FROM gaps WHERE project_id=? ORDER BY id').all(input.projectId) as { id: string; requirementId: string | null; openedRunId: string; kind: string; state: string; detail_json: string }[];
+        const rows = this.db.prepare('SELECT id,requirement_id AS requirementId,opened_run_id AS openedRunId,resolved_run_id AS resolvedRunId,kind,state,detail_json FROM gaps WHERE project_id=? ORDER BY id').all(input.projectId) as { id: string; requirementId: string | null; openedRunId: string; resolvedRunId: string | null; kind: string; state: string; detail_json: string }[];
         return boundedPage(rows.map(({ detail_json, ...rest }) => ({ ...rest, detail: JSON.parse(detail_json) as unknown })), `project-gaps:${input.projectId}`, input.cursor, input.limit);
       }
       case 'sync': {
@@ -223,19 +253,56 @@ export class ProductService {
     }
     return 'verified';
   }
-  private runGaps(run: RunResult) {
-    return run.requiredChecks.flatMap((id) => {
-      const item = run.cases.find((candidate) => candidate.testId === id);
-      if (item?.status === 'passed') return [];
-      return [{ testId: id, requirementId: item?.requirementId ?? null, kind: !item ? 'missing-test' : item.status === 'unknown' ? 'missing-evidence' : 'environment-blocked', status: item?.status ?? 'not-run' }];
-    });
+  private runGaps(run: RunResult, source: ProjectSource, integrity: 'verified' | 'degraded' | 'pending') {
+    if (run.origin !== 'live' || !run.finalized) return [];
+    const checks = new Map(source.checks.map(check => [check.id, check]));
+    const gaps: { testId: string | null; requirementId: string | null; kind: string; status: string }[] = [];
+    for (const requirement of source.requirements) {
+      if (!source.checks.some(check => check.requirementId === requirement.id))
+        gaps.push({ testId: null, requirementId: requirement.id, kind: 'missing-test', status: 'not-run' });
+    }
+    for (const id of run.plannedChecks) {
+      const item = run.cases.find(candidate => candidate.testId === id);
+      if (item?.status === 'failed') continue;
+      const kind = !item || item.status === 'not-run' || item.status === 'skipped' ? 'missing-test'
+        : item.status === 'unknown' ? 'missing-evidence'
+        : item.status !== 'passed' ? 'environment-blocked'
+        : run.evidenceVerified !== true || integrity !== 'verified' ? 'missing-evidence'
+        : run.state !== 'finished' || run.workerExitCode !== 0
+          || run.sourceBefore === null || run.sourceBefore !== run.sourceAfter
+          || run.environmentVerified !== true || run.cleanupVerified !== true ? 'environment-blocked' : null;
+      if (kind) gaps.push({ testId: id, requirementId: checks.get(id)?.requirementId ?? item?.requirementId ?? null,
+        kind, status: item?.status ?? 'not-run' });
+    }
+    return gaps;
   }
-  private recordGaps(run: RunResult): void {
+  private async recordGaps(run: RunResult): Promise<void> {
+    if (run.origin !== 'live' || !run.finalized) return;
+    const row = this.db.prepare('SELECT plan_id FROM runs WHERE id=?').get(run.runId) as { plan_id: string } | undefined;
+    const plan = row && this.runs.getPlan(row.plan_id);
+    if (!plan) throw new ServiceError('plan-stale');
+    const source = projectSourceSchema.parse(plan.catalog.source);
+    const integrity = await this.integrity(run);
+    const gaps = this.runGaps(run, source, integrity);
+    const trusted = run.state === 'finished' && run.workerExitCode === 0 && run.sourceBefore !== null
+      && run.sourceBefore === run.sourceAfter && run.environmentVerified === true
+      && run.evidenceVerified === true && run.cleanupVerified === true && integrity === 'verified';
     this.db.transaction(() => {
-      for (const gap of this.runGaps(run)) {
-        const id = randomUUID();
+      const open = this.db.prepare("SELECT id,requirement_id,kind,detail_json FROM gaps WHERE project_id=? AND state='open'")
+        .all(run.projectId) as { id: string; requirement_id: string | null; kind: string; detail_json: string }[];
+      for (const gap of gaps) {
+        if (open.some(row => row.requirement_id === gap.requirementId && row.kind === gap.kind
+          && (JSON.parse(row.detail_json) as { testId?: string | null }).testId === gap.testId)) continue;
         this.db.prepare('INSERT INTO gaps (id,project_id,requirement_id,opened_run_id,resolved_run_id,kind,state,detail_json) VALUES (?,?,?,?,NULL,?,?,?)')
-          .run(id, run.projectId, gap.requirementId, run.runId, gap.kind, 'open', JSON.stringify(gap));
+          .run(randomUUID(), run.projectId, gap.requirementId, run.runId, gap.kind, 'open', JSON.stringify(gap));
+      }
+      if (trusted) for (const gap of open) {
+        const { testId } = JSON.parse(gap.detail_json) as { testId?: string | null };
+        const related = testId ? source.checks.filter(check => check.id === testId && check.requirementId === gap.requirement_id)
+          : source.checks.filter(check => check.requirementId === gap.requirement_id && check.required);
+        if (related.length === 0 || !related.every(check => run.plannedChecks.includes(check.id)
+          && run.cases.some(item => item.testId === check.id && item.status === 'passed'))) continue;
+        this.db.prepare("UPDATE gaps SET state='resolved',resolved_run_id=? WHERE id=? AND state='open'").run(run.runId, gap.id);
       }
       this.db.prepare('INSERT INTO audit_events (id,action,actor_kind,entity_id,before_hash,after_hash,approval_id,recorded_at,detail_json) VALUES (?,?,?,?,NULL,?,NULL,?,?)')
         .run(randomUUID(), 'run-finalized', 'service', run.runId, createHash('sha256').update(JSON.stringify(run)).digest('hex'), new Date().toISOString(), JSON.stringify({ state: run.state, verdict: run.verdict }));

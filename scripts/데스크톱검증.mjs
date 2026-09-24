@@ -1,9 +1,10 @@
 // 실제 Electron 화면에서 합성 프로젝트의 등록과 승인 및 결과 조회를 검증한다.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { _electron } from 'playwright';
+import { _electron, chromium } from 'playwright';
 import { expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { startLocalService } from '../packages/engine/dist/서비스/상주서비스.js';
@@ -45,7 +46,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   const env = { ...process.env, CHECKMATE_NODE_PATH: process.execPath, CHECKMATE_DATA_DIR: dataRoot };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CHECKMATE_RENDERER_URL;
-  app = await _electron.launch({ args: [resolve('packages/desktop')], env, timeout: 20000 });
+  app = await _electron.launch({ args: [resolve('packages/desktop'), `--user-data-dir=${join(root, '화면 자료')}`], env, timeout: 20000 });
   const page = await app.firstWindow();
   page.on('pageerror', error => errors.push(error.message));
   const security = await app.evaluate(({ BrowserWindow }) => {
@@ -83,6 +84,23 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await expect(page.locator('.evidence-text')).toContainText('<script>');
   await page.getByRole('button', { name: '닫기', exact: true }).click();
   await page.getByRole('tab', { name: '요약', exact: true }).click();
+  const reportPath = join(root, '검증보고서.html');
+  await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, reportPath);
+  await page.getByRole('button', { name: 'HTML 보고서 저장', exact: true }).click();
+  await expect(page.getByText('보고서를 저장했습니다.', { exact: false })).toBeVisible();
+  const html = await readFile(reportPath, 'utf8');
+  assert.ok(html.includes('<meta charset="utf-8">'));
+  await writeFile(join(artifacts, '결과보고서.html'), html);
+  const reportBrowser = await chromium.launch({ headless: true });
+  try {
+    const reportPage = await reportBrowser.newPage();
+    await reportPage.goto(pathToFileURL(reportPath).href);
+    for (const width of [390, 1280]) {
+      await reportPage.setViewportSize({ width, height: 800 });
+      assert.equal(await reportPage.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
+      assert.ok((await reportPage.locator('body').innerText()).includes('요구사항 근거'));
+    }
+  } finally { await reportBrowser.close(); }
   const sizes = [];
   for (const [width, height, zoom] of [[1280, 800, 1], [1920, 1080, 1], [1440, 960, 1.5], [1920, 1080, 2]]) {
     await app.evaluate(({ BrowserWindow }, size) => {
@@ -99,8 +117,56 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     await page.screenshot({ path: join(artifacts, `실행결과-${width}-${zoom}.png`), fullPage: true });
     sizes.push({ width, height, zoom, overflow, violations: violations.length });
   }
+  await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setSize(1440, 960); window.webContents.setZoomFactor(1); });
+  await page.getByRole('button', { name: '설정', exact: true }).click();
+  await page.getByRole('button', { name: '현재 자료 백업', exact: true }).click();
+  await expect(page.getByRole('button', { name: '백업 지문 복사', exact: true })).toBeVisible({ timeout: 30000 });
+  const restoreRoot = join(root, '복구 자료');
+  await mkdir(restoreRoot);
+  await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, restoreRoot);
+  await page.getByRole('button', { name: '복구할 빈 폴더 선택', exact: true }).click();
+  await page.getByLabel('선택한 백업을 새 빈 폴더에 복구하겠습니다.', { exact: true }).check();
+  await page.getByRole('button', { name: '새 폴더로 복구', exact: true }).click();
+  await expect(page.getByText('복구한 자료 위치', { exact: false })).toBeVisible({ timeout: 30000 });
+  const restored = await startLocalService(restoreRoot);
+  try { assert.equal(restored.product.runs.getRun(runId)?.verdict, 'passed'); } finally { await restored.close(); }
+  await page.getByRole('button', { name: '실행이력', exact: true }).click();
+  const importedPath = join(root, '과거보고서.json');
+  await writeFile(importedPath, JSON.stringify({ mode: 'quick', status: 'passed', source: { fingerprint: 'a'.repeat(64) },
+    sourceAfter: { fingerprint: 'a'.repeat(64) }, steps: [{ id: 'types', status: 'passed', exitCode: 0 }], omitted: [] }));
+  await app.evaluate(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }); }, importedPath);
+  await page.getByRole('button', { name: '과거 보고서 가져오기', exact: true }).click();
+  await expect(page.getByRole('tab', { name: '가져온 원래 기록', exact: true })).toBeVisible();
+  await expect(page.locator('.run-panel .panel-heading').getByText('미확인', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '가져온 원래 기록', exact: true }).click();
+  await expect(page.locator('.evidence-text')).toContainText('"reportedStatus": "passed"');
+  await page.getByRole('button', { name: '프로젝트', exact: true }).click();
+  await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, resolve('examples/대표검증'));
+  await page.getByRole('button', { name: '+ 프로젝트 추가', exact: true }).click();
+  await page.getByLabel('검사 프로필', { exact: true }).selectOption('defect');
+  await page.getByRole('button', { name: '계획 확인', exact: true }).click();
+  await page.getByLabel('위 명령, 환경 값, 쓰기 범위를 확인했습니다.', { exact: true }).check();
+  await page.getByRole('button', { name: '이 계획 승인', exact: true }).click();
+  await page.getByRole('button', { name: '검사 실행', exact: true }).click();
+  await expect(page.locator('.run-panel .panel-heading').getByText('실패', { exact: true })).toBeVisible({ timeout: 30000 });
+  await page.getByRole('tab', { name: '검사 결과', exact: true }).click();
+  const designCase = page.locator('.case-card').filter({ has: page.getByText('defect-design', { exact: true }) });
+  await designCase.locator('.evidence-links button').first().click();
+  await page.getByRole('button', { name: '안전한 텍스트 보기', exact: true }).click();
+  await page.getByRole('button', { name: '캡처에서 위반 위치 보기', exact: true }).click();
+  await expect(page.getByRole('img', { name: '검사 당시 화면 캡처', exact: true })).toBeVisible();
+  await expect(page.locator('.visual-evidence__box')).toBeVisible();
+  assert.equal(await page.getByRole('img', { name: '검사 당시 화면 캡처' }).evaluate(image => image.complete && image.naturalWidth === 400), true);
+  for (const zoom of [1, 2]) {
+    await app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(value), zoom);
+    await page.waitForTimeout(150);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
+    assert.equal((await new AxeBuilder({ page }).setLegacyMode().analyze()).violations.length, 0);
+    await page.screenshot({ path: join(artifacts, `위반위치-${zoom}.png`), fullPage: true });
+  }
   assert.deepEqual(errors, []);
-  const report = { passed: true, runId, projectId, security, sizes, errors, scope: '실제 Electron과 로컬 SQLite 및 작업 프로세스. OS 폴더 선택 결과만 합성 경로로 고정.' };
+  const report = { passed: true, runId, projectId, security, sizes, errors, reportExport: true, backupRestore: true, importedHistory: true, designOverlay: true,
+    scope: '실제 Electron과 로컬 SQLite 및 작업 프로세스. OS 파일 선택 결과만 합성 경로로 고정.' };
   await writeFile(join(artifacts, '결과.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
 } catch (error) {

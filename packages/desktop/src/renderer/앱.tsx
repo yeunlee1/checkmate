@@ -1,6 +1,8 @@
 // 프로젝트 등록부터 실행 결과와 증거 조회까지 사람의 확인 흐름을 제공한다.
 import { useEffect, useRef, useState } from 'react';
 import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
+import { VisualEvidence, parseDesignEvidence } from './증거시각화.js';
+import type { DesignEvidence, VisualEvidenceProps } from './증거시각화.js';
 
 type Bridge = {
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
@@ -35,7 +37,7 @@ type Summary = { runId: string; projectId: string; profile: string; origin: 'liv
   evidenceVerified: boolean | null; cleanupVerified: boolean | null };
 type HistoryItem = { runId: string; profile: string; state: string; verdict: string | null; finalized: boolean };
 type Gap = { id?: string; testId?: string; requirementId: string | null; kind: string; state?: string; status?: string;
-  openedRunId?: string; detail?: unknown };
+  openedRunId?: string; resolvedRunId?: string | null; detail?: unknown };
 type RepairItem = CaseInfo & { instruction: string };
 type EvidenceDescriptor = { id: string; runId: string; relativePath: string; sha256: string; byteLength: number;
   mime: string; sensitivity: 'public' | 'restricted'; state: string };
@@ -50,9 +52,9 @@ const navigation: { id: PageName; label: string; mark: string }[] = [
 ];
 const stateLabels: Record<string, string> = { queued: '대기 중', running: '실행 중', finished: '종료',
   blocked: '차단됨', cancelled: '취소됨', unverifiable: '확인 불가' };
-const verdictLabels: Record<string, string> = { passed: '통과', failed: '실패', incomplete: '미완료', unknown: '확인 불가', 'out-of-scope': '이번 범위 밖' };
+const verdictLabels: Record<string, string> = { passed: '통과', failed: '실패', incomplete: '미완료', unknown: '미확인', 'out-of-scope': '이번 범위 밖' };
 const caseLabels: Record<string, string> = { passed: '통과', failed: '실패', 'not-run': '미실행', skipped: '건너뜀',
-  'timed-out': '시간 초과', interrupted: '중단', unknown: '확인 불가' };
+  'timed-out': '시간 초과', interrupted: '중단', unknown: '미확인' };
 const reasonLabels: Record<string, string> = { 'run-not-finished': '실행 종료가 확인되지 않았습니다.',
   'check-failed': '실패한 검사가 있습니다.', 'worker-failed': '작업 프로세스가 정상 종료하지 않았습니다.',
   'result-not-finalized': '결과 저장이 확정되지 않았습니다.', 'required-checks-empty': '필수 검사가 없습니다.',
@@ -179,6 +181,7 @@ export function App() {
   const [repairTotal, setRepairTotal] = useState(0);
   const [evidence, setEvidence] = useState<EvidenceInspection | null>(null);
   const [evidenceText, setEvidenceText] = useState('');
+  const [evidenceImage, setEvidenceImage] = useState<VisualEvidenceProps | null>(null);
   const [importedReport, setImportedReport] = useState<Record<string, unknown> | null>(null);
   const [evidenceCursor, setEvidenceCursor] = useState<string | null>(null);
   const [cancelRequested, setCancelRequested] = useState(false);
@@ -187,6 +190,10 @@ export function App() {
   const [backupHash, setBackupHash] = useState('');
   const [restoreTarget, setRestoreTarget] = useState('');
   const [restoreConsent, setRestoreConsent] = useState(false);
+  const [cleanupConsent, setCleanupConsent] = useState(false);
+  const [cleanupNote, setCleanupNote] = useState('');
+  const [cleanupAcknowledged, setCleanupAcknowledged] = useState('');
+  useEffect(() => { setCleanupConsent(false); setCleanupNote(''); setCleanupAcknowledged(''); }, [runId]);
   const [needsInitialization, setNeedsInitialization] = useState(false);
   const [serviceReady, setServiceReady] = useState(false);
   const [busy, setBusy] = useState('');
@@ -427,7 +434,7 @@ export function App() {
     if (!runId) return;
     await action('evidence', async () => {
       const inspected = await request<EvidenceInspection>('evidence', { runId, evidenceId: id });
-      setEvidence(inspected); setEvidenceText(''); setEvidenceCursor(null);
+      setEvidence(inspected); setEvidenceText(''); setEvidenceCursor(null); setEvidenceImage(null);
     });
   }
   async function readEvidence(cursor?: string) {
@@ -436,6 +443,35 @@ export function App() {
       const result = await request<EvidenceText>('evidence', { runId, evidenceId: evidence.evidence.id,
         content: true, limit: 8192, ...(cursor ? { cursor } : {}) });
       setEvidenceText((old) => cursor ? old + result.text : result.text); setEvidenceCursor(result.nextCursor);
+    });
+  }
+  async function readImage(evidenceId: string, design?: DesignEvidence) {
+    if (!runId) return;
+    await action('image', async () => {
+      const inspected = await request<EvidenceInspection>('evidence', { runId, evidenceId });
+      if (inspected.integrity !== 'verified' || inspected.evidence.sensitivity !== 'public' || inspected.evidence.mime !== 'image/png'
+        || inspected.evidence.byteLength > 8 * 1024 * 1024) throw new Error('공개 PNG 증거의 무결성을 확인할 수 없습니다.');
+      const chunks: string[] = [];
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      let width = 0; let height = 0; let byteLength = 0;
+      do {
+        const part = await request<{ base64: string; nextCursor: string | null; width: number; height: number; sha256: string }>('evidence-image', { runId, evidenceId, ...(cursor ? { cursor } : {}) });
+        if (part.sha256 !== inspected.evidence.sha256 || (width && (width !== part.width || height !== part.height))) throw new Error('읽는 동안 이미지가 바뀌었습니다.');
+        width = part.width; height = part.height;
+        const decoded = atob(part.base64); byteLength += decoded.length;
+        if (byteLength > inspected.evidence.byteLength || (part.nextCursor && seen.has(part.nextCursor))) throw new Error('이미지 구간을 확인할 수 없습니다.');
+        chunks.push(decoded);
+        if (part.nextCursor) seen.add(part.nextCursor);
+        cursor = part.nextCursor ?? undefined;
+      } while (cursor);
+      if (byteLength !== inspected.evidence.byteLength) throw new Error('이미지 크기가 일치하지 않습니다.');
+      const binary = chunks.join('');
+      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+      const sha256 = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte => byte.toString(16).padStart(2, '0')).join('');
+      if (sha256 !== inspected.evidence.sha256) throw new Error('이미지 해시가 일치하지 않습니다.');
+      setEvidenceImage({ imageDataUrl: `data:image/png;base64,${btoa(binary)}`, imageWidth: width, imageHeight: height,
+        screenshotEvidenceId: evidenceId, ...(design ? { designEvidence: design } : {}) });
     });
   }
   async function copyText(value: string) {
@@ -556,6 +592,15 @@ export function App() {
                 if (saved.path) setNotice(`보고서를 저장했습니다. ${saved.path}`);
               })}>HTML 보고서 저장</button> : <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? '취소 요청됨 · 종료 확인 중' : '실행 취소 요청'}</button>}</div>
               {summary.origin === 'imported' && <p className="instruction">가져온 과거 이력입니다. 현재 실행과 요구사항의 통과 근거로 사용하지 않습니다.</p>}
+              {summary.origin === 'live' && summary.finalized && ['unverifiable', 'cancelled'].includes(summary.state) && summary.cleanupVerified !== true && <div className="plan-review">
+                <h3>실행 자원 정리 확인</h3><p>이 실행의 종료와 정리를 자동 확인하지 못해 같은 프로젝트의 새 검사를 보류합니다. 해당 실행이 만든 프로세스와 임시 자료를 직접 확인한 뒤 기록해 주세요. 과거 실행의 미확인 판정은 유지됩니다.</p>
+                {cleanupAcknowledged === runId ? <p role="status">사람의 정리 확인을 기록했습니다. 새 계획으로 검사할 수 있습니다.</p> : <>
+                  <label className="field">확인한 정리 내용<textarea value={cleanupNote} minLength={8} maxLength={500} onChange={event => setCleanupNote(event.target.value)} disabled={!!busy} /></label>
+                  <label className="checkline"><input type="checkbox" checked={cleanupConsent} onChange={event => setCleanupConsent(event.target.checked)} disabled={!!busy} />이 실행의 프로세스와 임시 자료 정리를 직접 확인했습니다.</label>
+                  <button type="button" className="secondary" disabled={!!busy || !cleanupConsent || cleanupNote.trim().length < 8} onClick={() => void action('acknowledge-cleanup', async () => {
+                    await request('acknowledge-cleanup', { runId, confirm: true, note: cleanupNote }); setCleanupAcknowledged(runId);
+                  })}>정리 확인 기록</button></>}
+              </div>}
               <div className="result-tabs" role="tablist" aria-label="결과 보기">{([{ id: 'summary', label: '요약' }, { id: 'cases', label: '검사 결과' }, { id: 'requirements', label: '요구사항 근거' },
                 { id: 'gaps', label: '미검증' }, { id: 'repair-bundle', label: 'AI 수정 자료 묶음' }] as { id: ResultTab; label: string }[]).map((tab) =>
                 <button type="button" role="tab" aria-selected={resultTab === tab.id} className={resultTab === tab.id ? 'result-tab active' : 'result-tab'} key={tab.id}
@@ -600,21 +645,28 @@ export function App() {
                 {repairItems.length ? repairItems.map((item) => <div key={item.testId}><CaseCard item={item} onEvidence={(id) => void showEvidence(id)} /><p className="instruction">{item.instruction}</p></div>)
                   : <Empty title="전달할 실패 자료가 없습니다" body="실패나 미검증 결과가 저장되면 여기에 표시됩니다." />}</div>}
               {resultTab !== 'summary' && resultTab !== 'imported' && resultNext && <button type="button" className="secondary load-more" onClick={() => void moreResults()} disabled={!!busy}>상세 항목 더 보기</button>}
-              {evidence && <aside className="evidence-panel" aria-label="증거 상세"><div className="panel-heading"><h3>증거 확인</h3><button className="text-button" type="button" onClick={() => setEvidence(null)}>닫기</button></div>
+              {evidence && <aside className="evidence-panel" aria-label="증거 상세"><div className="panel-heading"><h3>증거 확인</h3><button className="text-button" type="button" onClick={() => { setEvidence(null); setEvidenceImage(null); }}>닫기</button></div>
                 <dl className="detail-grid"><div><dt>파일</dt><dd className="path-line">{evidence.evidence.relativePath}</dd></div><div><dt>형식</dt><dd>{evidence.evidence.mime}</dd></div>
                   <div><dt>무결성</dt><dd><Badge value={evidence.integrity} label={evidence.integrity === 'verified' ? '확인됨' : '손상 또는 부족'} /></dd></div>
                   <div><dt>크기</dt><dd>{evidence.evidence.byteLength.toLocaleString()}바이트</dd></div></dl>
                 {evidence.reason && <p className="alert-text">현재 확인 결과 {evidenceReasonLabels[evidence.reason] ?? '증거를 확인할 수 없음'}</p>}
+                {evidence.integrity === 'verified' && evidence.evidence.sensitivity === 'public' && evidence.evidence.mime === 'image/png' && <button type="button" className="secondary" disabled={!!busy} onClick={() => void readImage(evidence.evidence.id)}>캡처 보기</button>}
+                {!evidenceCursor && parseDesignEvidence(evidenceText) && <button type="button" className="secondary" disabled={!!busy} onClick={() => {
+                  const design = parseDesignEvidence(evidenceText); if (design) void readImage(design.screenshotEvidenceId, design);
+                }}>캡처에서 위반 위치 보기</button>}
+                {evidenceImage && (evidenceImage.screenshotEvidenceId === evidence.evidence.id || parseDesignEvidence(evidenceText)?.screenshotEvidenceId === evidenceImage.screenshotEvidenceId) && <VisualEvidence key={evidenceImage.screenshotEvidenceId} {...evidenceImage} />}
                 {evidence.integrity === 'verified' && evidence.evidence.sensitivity === 'public' && ['text/plain', 'application/json', 'text/html'].includes(evidence.evidence.mime)
                   ? <><button type="button" className="secondary" onClick={() => void readEvidence()} disabled={!!busy}>안전한 텍스트 보기</button>
                     {evidenceText && <pre className="evidence-text">{evidenceText}</pre>}{evidenceCursor && <button type="button" className="secondary" onClick={() => void readEvidence(evidenceCursor)} disabled={!!busy}>본문 더 보기</button>}</>
-                  : <p className="muted">이 증거는 화면에서 본문을 열 수 없습니다. 메타데이터만 확인할 수 있습니다.</p>}</aside>}
+                  : evidence.evidence.mime !== 'image/png' || evidence.evidence.sensitivity !== 'public' ? <p className="muted">이 증거는 화면에서 본문을 열 수 없습니다. 메타데이터만 확인할 수 있습니다.</p> : null}</aside>}
             </>}</section>}</>}
           {!loading && serviceReady && page === 'gaps' && <section className="panel"><div className="panel-heading"><div><h2>미검증 항목</h2><p>필수 검사에서 확인되지 않은 근거를 추적합니다.</p></div><span className="count-label">총 {gapsTotal}개</span></div>
             {!project ? <Empty title="프로젝트를 선택하세요" body="프로젝트를 선택하면 미검증 이력이 표시됩니다." /> : gaps.length === 0 ? <Empty title="기록된 미검증 항목이 없습니다" body="검사 실행과 결과 확정 후 다시 확인하세요." />
-              : <><div className="table-scroll"><table><thead><tr><th scope="col">종류</th><th scope="col">요구사항</th><th scope="col">실행</th><th scope="col">상태</th></tr></thead>
+              : <><div className="table-scroll"><table><thead><tr><th scope="col">종류</th><th scope="col">요구사항</th><th scope="col">처음 발견한 실행</th><th scope="col">보완한 실행</th><th scope="col">상태</th></tr></thead>
                 <tbody>{gaps.map((gap, index) => <tr key={gap.id ?? index}><td>{gapLabels[gap.kind] ?? '확인 필요'}</td><td>{gap.requirementId ?? '없음'}</td>
-                  <td>{gap.openedRunId ? <button type="button" className="link-button" onClick={() => void openRun(gap.openedRunId!)}>{short(gap.openedRunId, 18)}</button> : '기록 없음'}</td><td>{gap.state ?? gap.status ?? '미확인'}</td></tr>)}</tbody></table></div>
+                  <td>{gap.openedRunId ? <button type="button" className="link-button" onClick={() => void openRun(gap.openedRunId!)}>{short(gap.openedRunId, 18)}</button> : '기록 없음'}</td>
+                  <td>{gap.resolvedRunId ? <button type="button" className="link-button" onClick={() => void openRun(gap.resolvedRunId!)}>{short(gap.resolvedRunId, 18)}</button> : '아직 없음'}</td>
+                  <td>{gap.state === 'resolved' ? '보완됨' : gap.state === 'open' ? '보완 필요' : gap.status ? caseLabels[gap.status] ?? gap.status : '미확인'}</td></tr>)}</tbody></table></div>
                 <p className="page-count">{gaps.length} / {gapsTotal}개</p>{gapsCursor && <button type="button" className="secondary" onClick={() => void action('more-gaps', () => loadProjectGaps(project.id, gapsCursor))} disabled={!!busy}>미검증 항목 더 보기</button>}</>}
           </section>}
           {!loading && serviceReady && page === 'settings' && <section className="panel"><div className="panel-heading"><div><h2>로컬 연결</h2><p>이 앱과 AI 도구가 같은 검사 이력을 읽습니다.</p></div></div>

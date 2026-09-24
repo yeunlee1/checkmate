@@ -127,6 +127,12 @@ program.command('result <run>').option('--section <name>', 'summary/cases/requir
 program.command('evidence <run> <evidence>').option('--content', '허용된 본문을 조회한다.').option('--cursor <cursor>').option('--limit <bytes>')
   .action(async (run: string, evidence: string, opts: Record<string, unknown>) => output(await invoke('evidence', { runId: run, evidenceId: evidence, content: opts.content === true, ...optionalPage(opts) })));
 program.command('cancel <run>').action(async (run: string) => output(await invoke('cancel', { runId: run })));
+program.command('acknowledge-cleanup <run>').description('사람이 실행 자원 정리를 확인한 기록을 남긴다. 과거 판정은 유지한다.')
+  .requiredOption('--note <text>', '직접 확인한 정리 내용. 8자 이상 500자 이하.').option('--confirm', '해당 실행의 프로세스와 자료 정리를 직접 확인했다.')
+  .action(async (run: string, opts: { note: string; confirm?: boolean }) => {
+    if (!opts.confirm) throw new ServiceError('needs-approval', '실행 자원 정리를 확인한 뒤 --confirm을 지정해 주세요.');
+    output(await invoke('acknowledge-cleanup', { runId: run, confirm: true, note: opts.note }));
+  });
 for (const method of ['history', 'gaps'] as const) program.command(method).requiredOption('--project <id>').option('--cursor <cursor>').option('--limit <count>')
   .action(async (opts: Record<string, unknown>) => output(await invoke(method, { projectId: opts.project, ...optionalPage(opts) })));
 const catalog = program.command('catalog');
