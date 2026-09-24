@@ -4,7 +4,7 @@ const { contextBridge, ipcRenderer } = electron;
 
 contextBridge.exposeInMainWorld('checkmate', {
   request: (method: string, input: Record<string, unknown>, requestId?: string) => ipcRenderer.invoke('checkmate:request', { apiVersion: 1, requestId: requestId ?? globalThis.crypto.randomUUID(), method, input }),
-  chooseDirectory: () => ipcRenderer.invoke('checkmate:choose-directory'),
+  chooseDirectory: (purpose?: string) => ipcRenderer.invoke('checkmate:choose-directory', purpose),
   initializeLocalStore: () => ipcRenderer.invoke('checkmate:initialize'),
   connectionInfo: () => ipcRenderer.invoke('checkmate:connection-info'),
 });

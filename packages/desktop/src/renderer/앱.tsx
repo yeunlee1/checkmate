@@ -4,7 +4,7 @@ import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 
 type Bridge = {
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
-  chooseDirectory(): Promise<string | null>;
+  chooseDirectory(purpose?: 'backup' | 'restore'): Promise<string | null>;
   connectionInfo(): Promise<{ version: string; dataPath: string; mcpCommand: { command: string; args: string[] } }>;
   initializeLocalStore(): Promise<void>;
 };
@@ -180,6 +180,10 @@ export function App() {
   const [evidenceCursor, setEvidenceCursor] = useState<string | null>(null);
   const [cancelRequested, setCancelRequested] = useState(false);
   const [connection, setConnection] = useState<ConnectionInfo | null>(null);
+  const [backupDirectory, setBackupDirectory] = useState('');
+  const [backupHash, setBackupHash] = useState('');
+  const [restoreTarget, setRestoreTarget] = useState('');
+  const [restoreConsent, setRestoreConsent] = useState(false);
   const [needsInitialization, setNeedsInitialization] = useState(false);
   const [serviceReady, setServiceReady] = useState(false);
   const [busy, setBusy] = useState('');
@@ -315,6 +319,28 @@ export function App() {
       setConnection(await window.checkmate!.connectionInfo());
       await loadProjects(); setServiceReady(true);
       setNotice('로컬 서비스에 연결했습니다.');
+    });
+  }
+  async function backup() {
+    await action('backup', async () => {
+      const result = await request<{ backupDirectory: string; manifestHash: string }>('backup');
+      setBackupDirectory(result.backupDirectory); setBackupHash(result.manifestHash); setRestoreConsent(false);
+      setNotice('관리 이력과 증거의 백업을 검증했습니다. 연결 비밀은 포함하지 않습니다.');
+    });
+  }
+  async function chooseBackupPath(purpose: 'backup' | 'restore') {
+    await action('choose-backup', async () => {
+      const path = await window.checkmate!.chooseDirectory(purpose);
+      if (!path) return;
+      if (purpose === 'backup') { setBackupDirectory(path); setBackupHash(''); } else setRestoreTarget(path);
+      setRestoreConsent(false);
+    });
+  }
+  async function restore() {
+    if (!restoreConsent || !backupDirectory || !restoreTarget) return;
+    await action('restore', async () => {
+      const result = await request<{ dataRoot: string; nextAction: string }>('restore', { backupDirectory, targetRoot: restoreTarget, confirm: true });
+      setRestoreConsent(false); setNotice(`복구한 자료 위치 ${result.dataRoot}. ${result.nextAction}`);
     });
   }
   async function inspect() {
@@ -578,6 +604,16 @@ export function App() {
                 <code>인자 {JSON.stringify(connection.mcpCommand.args)}</code><br />
                 <button type="button" className="text-button" onClick={() => void copyText(JSON.stringify(connection.mcpCommand, null, 2))}>설정 값 복사</button></dd></div></dl>
               : <Empty title="연결 정보를 읽지 못했습니다" body="로컬 서비스 상태를 확인한 뒤 앱을 다시 열어 주세요." />}
+            <div className="plan-review"><h3>백업과 복구</h3><p>실행 중인 검사가 없을 때 이력과 증거를 함께 백업합니다. 복구는 새 빈 폴더에 자료를 만들며 현재 저장소는 유지합니다.</p>
+              <div className="detail-actions"><button type="button" className="primary" onClick={() => void backup()} disabled={!!busy}>현재 자료 백업</button>
+                <button type="button" className="secondary" onClick={() => void chooseBackupPath('backup')} disabled={!!busy}>기존 백업 선택</button>
+                <button type="button" className="secondary" onClick={() => void chooseBackupPath('restore')} disabled={!!busy}>복구할 빈 폴더 선택</button></div>
+              <p className="path-line">백업 위치 {backupDirectory || '미선택'}</p>
+              {backupHash && <p>백업 지문 <CopyValue value={backupHash} label="백업 지문" /></p>}
+              <p className="path-line">새 자료 위치 {restoreTarget || '미선택'}</p>
+              <label className="checkline"><input type="checkbox" checked={restoreConsent} onChange={event => setRestoreConsent(event.target.checked)} disabled={!backupDirectory || !restoreTarget || !!busy} />선택한 백업을 새 빈 폴더에 복구하겠습니다.</label>
+              <button type="button" className="secondary" onClick={() => void restore()} disabled={!restoreConsent || !!busy}>새 폴더로 복구</button>
+            </div>
           </section>}
         </>}
       </div>

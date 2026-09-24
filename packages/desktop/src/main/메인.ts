@@ -54,9 +54,10 @@ else {
       return await callService(request, options());
     } catch (error) { return errorResponse(requestId, error); }
   });
-  ipcMain.handle('checkmate:choose-directory', async (event) => {
+  ipcMain.handle('checkmate:choose-directory', async (event, purpose?: string) => {
     checkSender(event);
-    const result = await dialog.showOpenDialog(window!, { title: '검사할 프로젝트 폴더 선택', properties: ['openDirectory'] });
+    const title = purpose === 'backup' ? '완성된 백업 폴더 선택' : purpose === 'restore' ? '복구할 새 빈 자료 폴더 선택' : '검사할 프로젝트 폴더 선택';
+    const result = await dialog.showOpenDialog(window!, { title, properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   ipcMain.handle('checkmate:initialize', async (event) => { checkSender(event); await initializeLocalStore(options()); });

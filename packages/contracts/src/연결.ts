@@ -20,6 +20,8 @@ export const apiInputs = {
   gaps: z.strictObject({ projectId: uuid, ...pagination }),
   sync: z.strictObject({ projectId: uuid }),
   activate: z.strictObject({ projectId: uuid, contentHash: z.string().regex(/^[a-f0-9]{64}$/) }),
+  backup: z.strictObject({}),
+  restore: z.strictObject({ backupDirectory: z.string().min(1).max(4096), targetRoot: z.string().min(1).max(4096), confirm: z.literal(true) }),
 } as const;
 
 export const apiMethodSchema = z.enum(Object.keys(apiInputs) as [keyof typeof apiInputs, ...(keyof typeof apiInputs)[]]);
@@ -36,7 +38,7 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore']);
 
 export class ServiceError extends Error {
   constructor(readonly code: string, message = '요청을 처리할 수 없습니다.', readonly retryable = false, readonly nextAction = '입력과 현재 상태를 확인해 주세요.') {

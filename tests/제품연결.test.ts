@@ -67,6 +67,18 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   const cases = (await f.command('result', runId, '--section', 'cases')).response.data.items;
   const requirements = (await f.command('result', runId, '--section', 'requirements')).response.data.items;
   expect(requirements).toMatchObject([{ requirementId: 'requirement-1', status: 'passed', selectedChecks: ['check-1'] }]);
+  const backup = (await f.command('backup')).response;
+  expect(backup).toMatchObject({ ok: true, data: { includesConnectionSecret: false } });
+  const restoredRoot = join(f.dataRoot, '..', '복구 자료');
+  expect((await f.command('restore', backup.data.backupDirectory, '--target', restoredRoot)).code).toBe(3);
+  const restored = (await f.command('restore', backup.data.backupDirectory, '--target', restoredRoot, '--confirm')).response;
+  expect(restored).toMatchObject({ ok: true, data: { dataRoot: restoredRoot, switched: false } });
+  const restoredService = await startLocalService(restoredRoot);
+  cleanup.push(restoredService.close);
+  const preserved = await restoredService.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'result', input: { runId, section: 'summary' } }, 'human');
+  expect(preserved).toMatchObject({ ok: true, data: { runId, verdict: 'passed', integrity: 'verified' } });
+  expect(await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'backup', input: {} }, 'agent'))
+    .toMatchObject({ ok: false, error: { code: 'human-action-required' } });
   const evidenceId: string = cases[0].evidenceIds[0];
   const evidence = (await f.command('evidence', runId, evidenceId)).response.data.evidence;
   const file = join(f.service.paths.runs, runId, evidence.relativePath);
@@ -76,7 +88,7 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   expect(degraded).toMatchObject({ verdict: 'passed', effectiveVerdict: 'unknown', integrity: 'degraded', reusablePassed: false });
   const repairs = (await f.command('result', runId, '--section', 'repair-bundle')).response.data;
   expect(repairs).toMatchObject({ integrity: 'degraded', items: [{ testId: 'check-1', codePaths: ['scripts/검사.mjs'] }], guidance: { automaticRetry: 0 } });
-}, 30000);
+}, 60000);
 
 it('비영 종료는 CLI 실패로 남고 변경된 소스에는 기존 승인을 사용할 수 없다', async () => {
   const f = await fixture(9);
@@ -91,4 +103,19 @@ it('비영 종료는 CLI 실패로 남고 변경된 소스에는 기존 승인�
   expect(stale.code).toBe(7);
   expect(stale.response.error.code).toBe('plan-stale');
   await expect(startLocalService(f.dataRoot)).rejects.toMatchObject({ code: 'service-already-running' });
+}, 30000);
+
+it('진행 중에는 백업을 막고 취소가 끝나면 저장소를 다시 사용할 수 있다', async () => {
+  const f = await fixture();
+  await writeFile(join(f.root, 'scripts', '검사.mjs'), '// 합성 대기 작업을 실행한다.\nsetTimeout(() => {}, 4000);\n');
+  await f.command('register', f.root, '--trust');
+  const plan = (await f.command('inspect', '--project', f.projectId)).response.data;
+  await f.command('approve', '--plan', plan.planId, '--fingerprint', plan.fingerprint, '--confirm');
+  const started = await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'start', input: { projectId: f.projectId, planId: plan.planId } }, 'human');
+  expect(started.ok).toBe(true);
+  if (!started.ok) throw new Error('합성 실행 접수 실패');
+  const runId = (started.data as { runId: string }).runId;
+  expect(await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'backup', input: {} }, 'human'))
+    .toMatchObject({ ok: false, error: { code: 'maintenance-busy' } });
+  await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'cancel', input: { runId } }, 'human');
 }, 30000);

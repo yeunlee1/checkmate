@@ -63,7 +63,7 @@ export async function startLocalService(root?: string, idleMs = 60000): Promise<
     db = connectStore(join(paths.state, 'checkmate.sqlite'));
     const evidence = new EvidenceStore(db, paths.runs);
     const events = new EventStore(db);
-    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events }));
+    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events }), paths);
     for (const row of db.prepare("SELECT id FROM runs WHERE state IN ('queued','running')").all() as { id: string }[]) {
       const old = product.runs.getRun(row.id)!;
       const queued = old.state === 'queued';

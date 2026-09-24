@@ -1,5 +1,6 @@
 // 프로젝트 등록과 승인된 실행 및 결과 조회를 모든 입구에 공통으로 제공한다.
 import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { apiInputs, errorResponse, humanMethods, ServiceError } from '@checkmate/contracts/api';
 import type { ApiRequest, ApiResponse } from '@checkmate/contracts/api';
@@ -14,6 +15,10 @@ import type { RunExecutor } from './실행서비스.js';
 import type { ClientRole } from '../연결/로컬통신.js';
 import { boundedPage, compactCase, resultSummary } from './조회결과.js';
 import { requirementEvidence } from './요구사항근거.js';
+import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
+import type { DataPaths } from '../연결/개인경로.js';
+
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore']);
 
 export class ProductService {
   readonly projects: ProjectStore;
@@ -21,21 +26,30 @@ export class ProductService {
   readonly execution: RunService;
   private readonly pending = new Set<string>();
   private storageFailure = false;
+  private maintenance = false;
+  private writing = 0;
 
-  constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor) {
+  constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths) {
     this.projects = new ProjectStore(db);
     this.runs = new SQLiteRunStore(db);
     this.execution = new RunService(this.runs, executor);
   }
-  get active(): boolean { return this.pending.size > 0; }
+  get active(): boolean { return this.pending.size > 0 || this.maintenance || this.writing > 0; }
 
   async handle(request: ApiRequest, role: ClientRole): Promise<ApiResponse> {
+    let writing = false;
     try {
       if (role === 'agent' && humanMethods.has(request.method)) throw new ServiceError('human-action-required');
-      if (this.storageFailure && ['start', 'register', 'activate', 'approve', 'sync'].includes(request.method)) throw new ServiceError('storage-error', '저장 상태를 확인하기 전에는 새 작업을 접수할 수 없습니다.');
+      if (mutations.has(request.method)) {
+        if (this.storageFailure) throw new ServiceError('storage-error', '저장 상태를 확인하기 전에는 새 작업을 접수할 수 없습니다.');
+        if (this.maintenance) throw new ServiceError('maintenance-busy', '자료 백업 또는 복구가 진행 중입니다.', true);
+        this.writing += 1; writing = true;
+      }
       const data = await this.dispatch(request);
       return { apiVersion: 1, requestId: request.requestId, ok: true, data };
-    } catch (error) { return errorResponse(request.requestId, error); }
+    } catch (error) { return errorResponse(request.requestId, error instanceof BackupError
+      ? new ServiceError(error.code, error.message, false, '백업의 완성 표식과 복구 대상이 새 빈 폴더인지 확인해 주세요.') : error); }
+    finally { if (writing) this.writing -= 1; }
   }
 
   private async dispatch(request: ApiRequest): Promise<unknown> {
@@ -44,7 +58,7 @@ export class ProductService {
       case 'capabilities':
         apiInputs.capabilities.parse(raw);
         return { version: '0.1.0-alpha.1', apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
-          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'history', 'mcp'],
+          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore'],
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
       case 'projects': {
@@ -155,6 +169,26 @@ export class ProductService {
         const source = await readProjectSource(this.projects.get(input.projectId).realPath);
         if (source.contentHash !== input.contentHash) throw new ServiceError('catalog-stale');
         return this.projects.sync(source, true);
+      }
+      case 'backup': {
+        apiInputs.backup.parse(raw);
+        if (!this.paths) throw new ServiceError('unavailable');
+        if (this.pending.size > 0 || this.writing !== 1) throw new ServiceError('maintenance-busy', '실행과 저장 작업이 끝난 뒤 백업할 수 있습니다.', true);
+        this.maintenance = true;
+        try {
+          const saved = await createBackup(this.db, this.paths, join(this.paths.root, 'backups'));
+          return { backupDirectory: saved.backupDirectory, manifestHash: saved.manifestHash, fileCount: saved.manifest.files.length,
+            createdAt: saved.manifest.createdAt, includesConnectionSecret: false };
+        } finally { this.maintenance = false; }
+      }
+      case 'restore': {
+        const input = apiInputs.restore.parse(raw);
+        if (this.pending.size > 0 || this.writing !== 1) throw new ServiceError('maintenance-busy', '실행과 저장 작업이 끝난 뒤 복구할 수 있습니다.', true);
+        this.maintenance = true;
+        try {
+          const restored = await restoreBackup(input.backupDirectory, input.targetRoot);
+          return { dataRoot: restored.root, switched: false, nextAction: '현재 자료는 유지됩니다. 복구한 자료는 CLI --data-dir로 연결해 확인해 주세요.' };
+        } finally { this.maintenance = false; }
       }
     }
   }

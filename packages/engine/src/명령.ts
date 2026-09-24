@@ -102,6 +102,13 @@ program.command('run').requiredOption('--project <id>').requiredOption('--plan <
     }
   });
 program.command('status <run>').action(async (run: string) => output(await invoke('status', { runId: run })));
+program.command('backup').description('현재 유휴 저장소와 증거를 함께 백업한다.').action(async () => output(await invoke('backup', {})));
+program.command('restore <backup>').description('검증된 백업을 새 빈 폴더로 복구한다. 현재 자료는 유지한다.')
+  .requiredOption('--target <path>', '새 빈 자료 폴더의 절대 경로.').option('--confirm', '복구 대상과 자료 생성을 확인한다.')
+  .action(async (backup: string, opts: { target: string; confirm?: boolean }) => {
+    if (!opts.confirm) throw new ServiceError('needs-approval', '복구 경로를 확인한 뒤 --confirm을 지정해 주세요.');
+    output(await invoke('restore', { backupDirectory: backup, targetRoot: opts.target, confirm: true }));
+  });
 program.command('result <run>').option('--section <name>', 'summary/cases/requirements/gaps/repair-bundle.', 'summary').option('--cursor <cursor>').option('--limit <count>')
   .action(async (run: string, opts: Record<string, unknown>) => output(await invoke('result', { runId: run, section: opts.section, ...optionalPage(opts) })));
 program.command('evidence <run> <evidence>').option('--content', '허용된 본문을 조회한다.').option('--cursor <cursor>').option('--limit <bytes>')
