@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { assessResult } from '@checkmate/contracts';
 import type { RunResult } from '@checkmate/contracts';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -31,7 +31,7 @@ async function fixture() {
   return { files, db, store, registration };
 }
 
-function admission(plan: PlanRegistration, overrides: Partial<{ requestId: string; requestHash: string; runId: string }> = {}) {
+function admission(plan: PlanRegistration, overrides: Partial<{ requestId: string; requestHash: string; runId: string; createdAt: string }> = {}) {
   return { projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID(), requestHash: 'e'.repeat(64),
     runId: randomUUID(), createdAt: new Date().toISOString(), ...overrides };
 }
@@ -116,6 +116,29 @@ test('프로젝트별 시간과 ID cursor를 사용하고 다른 프로젝트 cu
     .toThrowError(expect.objectContaining({ code: 'plan-stale' }));
 });
 
+test('초 단위 UTC 접수를 밀리초로 저장하고 실제 시간과 cursor 순서로 조회한다', async () => {
+  const { db, store, registration } = await fixture();
+  const older = admission(registration, { createdAt: '2026-09-25T03:00:00Z' });
+  store.admitRun(older);
+  const oldRun: RunResult = { ...store.getRun(older.runId)!, state: 'cancelled', finalized: true };
+  store.finalizeRun({ ...oldRun, ...assessResult(oldRun) });
+  const newer = admission(registration, { createdAt: '2026-09-25T03:00:00.100Z' });
+  store.admitRun(newer);
+  const newRun: RunResult = { ...store.getRun(newer.runId)!, state: 'cancelled', finalized: true };
+  store.finalizeRun({ ...newRun, ...assessResult(newRun) });
+  expect(db.prepare('SELECT started_at FROM runs WHERE id = ?').get(older.runId))
+    .toEqual({ started_at: '2026-09-25T03:00:00.000Z' });
+  const first = store.listRuns(registration.project.id, 1);
+  const second = store.listRuns(registration.project.id, 1, first.nextCursor!);
+  expect([...first.runs, ...second.runs].map((run) => run.runId)).toEqual([newer.runId, older.runId]);
+  expect(second.nextCursor).toBeNull();
+
+  db.prepare('UPDATE runs SET started_at = ? WHERE id = ?').run(older.createdAt, older.runId);
+  const mixedFirst = store.listRuns(registration.project.id, 1);
+  const mixedSecond = store.listRuns(registration.project.id, 1, mixedFirst.nextCursor!);
+  expect([...mixedFirst.runs, ...mixedSecond.runs].map((run) => run.runId)).toEqual([newer.runId, older.runId]);
+});
+
 test('두 연결의 동시 접수에서 한 실행만 잠금을 얻는다', async () => {
   const { files, db, store, registration } = await fixture();
   const otherDb = connectStore(files.dbPath);
@@ -129,6 +152,46 @@ test('두 연결의 동시 접수에서 한 실행만 잠금을 얻는다', asyn
   expect(outcomes.filter((item) => item.status === 'rejected')).toHaveLength(1);
   expect((db.prepare('SELECT count(*) AS count FROM runs').get() as { count: number }).count).toBe(1);
   expect((db.prepare('SELECT count(*) AS count FROM requests').get() as { count: number }).count).toBe(1);
+});
+
+test('두 실제 WAL 연결의 중첩 접수에서 BUSY SNAPSHOT을 storage-busy로 반환한다', async () => {
+  const { files, db, store, registration } = await fixture();
+  const otherDb = connectStore(files.dbPath);
+  cleanup.unshift(async () => { otherDb.close(); });
+  const otherStore = new SQLiteRunStore(otherDb);
+  const input = admission(registration);
+  const originalPrepare = db.prepare.bind(db);
+  let sqliteCode: string | undefined;
+  let overlapped = false;
+  const spy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
+    const statement = originalPrepare(sql);
+    if (sql.startsWith('SELECT request_hash, run_id') && !overlapped) {
+      const originalGet = statement.get.bind(statement);
+      statement.get = (...params: unknown[]) => {
+        const row = originalGet(...params);
+        overlapped = true;
+        expect(otherStore.admitRun({ ...input, runId: randomUUID() }).reused).toBe(false);
+        return row;
+      };
+    }
+    if (sql.startsWith('INSERT INTO runs')) {
+      const originalRun = statement.run.bind(statement);
+      statement.run = (...params: unknown[]) => {
+        try { return originalRun(...params); }
+        catch (error) { sqliteCode = (error as { code: string }).code; throw error; }
+      };
+    }
+    return statement;
+  });
+  try {
+    expect(() => store.admitRun(input)).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+    expect(overlapped).toBe(true);
+    expect(sqliteCode).toBe('SQLITE_BUSY_SNAPSHOT');
+    expect(store.admitRun(input)).toEqual({ runId: (db.prepare('SELECT run_id FROM requests WHERE request_id = ?')
+      .get(input.requestId) as { run_id: string }).run_id, reused: true });
+    expect(db.prepare('SELECT count(*) AS count FROM runs').get()).toEqual({ count: 1 });
+    expect(db.prepare('SELECT count(*) AS count FROM requests').get()).toEqual({ count: 1 });
+  } finally { spy.mockRestore(); }
 });
 
 test('새 카탈로그 등록은 활성 카탈로그를 바꾸지 않으며 손상된 JSON을 오류로 반환한다', async () => {

@@ -17,7 +17,7 @@ type Row = Record<string, unknown>;
 function failure(error: unknown): never {
   if (error instanceof RunStoreError) throw error;
   const code = error instanceof Error && 'code' in error ? String(error.code) : '';
-  if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') throw new RunStoreError('storage-busy');
+  if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) throw new RunStoreError('storage-busy');
   throw new RunStoreError('storage-error');
 }
 
@@ -101,6 +101,7 @@ export class SQLiteRunStore implements RunStore {
 
   admitRun(input: Admission): AdmissionResult {
     const parsed = valid(z.strictObject({ projectId: uuid, planId: uuid, requestId: uuid, requestHash: hash, runId: uuid, createdAt: time }), input);
+    const startedAt = new Date(parsed.createdAt).toISOString();
     try {
       return this.db.transaction(() => {
         const project = this.db.prepare('SELECT active_catalog_id FROM projects WHERE id = ?').get(parsed.projectId) as { active_catalog_id: string | null } | undefined;
@@ -130,7 +131,7 @@ export class SQLiteRunStore implements RunStore {
         base.reasons = assessResult(base).reasons;
         valid(runResultSchema, base);
         this.db.prepare(`INSERT INTO runs (id,workspace_id,plan_id,origin,state,verdict,phase,worker_exit_code,started_at,summary_json)
-          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(parsed.runId, plan.workspace_id, parsed.planId, 'live', 'queued', null, 'queued', null, parsed.createdAt, JSON.stringify(base));
+          VALUES (?,?,?,?,?,?,?,?,?,?)`).run(parsed.runId, plan.workspace_id, parsed.planId, 'live', 'queued', null, 'queued', null, startedAt, JSON.stringify(base));
         this.db.prepare('INSERT INTO requests (workspace_id,request_id,request_hash,run_id) VALUES (?,?,?,?)')
           .run(plan.workspace_id, parsed.requestId, parsed.requestHash, parsed.runId);
         return { runId: parsed.runId, reused: false };
@@ -212,16 +213,17 @@ export class SQLiteRunStore implements RunStore {
       } catch { throw new RunStoreError('invalid-input'); }
     }
     try {
-      const rows = this.db.prepare(`SELECT r.id, r.started_at, r.summary_json FROM runs r
+      const rows = this.db.prepare(`SELECT r.id, strftime('%Y-%m-%dT%H:%M:%fZ', r.started_at) AS sort_at, r.summary_json FROM runs r
         JOIN workspaces w ON w.id = r.workspace_id WHERE w.project_id = ?
-        AND (? IS NULL OR r.started_at < ? OR (r.started_at = ? AND r.id < ?))
-        ORDER BY r.started_at DESC, r.id DESC LIMIT ?`).all(projectId, position?.startedAt ?? null,
+        AND (? IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', r.started_at) < strftime('%Y-%m-%dT%H:%M:%fZ', ?)
+          OR (strftime('%Y-%m-%dT%H:%M:%fZ', r.started_at) = strftime('%Y-%m-%dT%H:%M:%fZ', ?) AND r.id < ?))
+        ORDER BY sort_at DESC, r.id DESC LIMIT ?`).all(projectId, position?.startedAt ?? null,
         position?.startedAt ?? null, position?.startedAt ?? null, position?.id ?? null, limit + 1) as
-        { id: string; started_at: string; summary_json: string }[];
+        { id: string; sort_at: string; summary_json: string }[];
       const page = rows.slice(0, limit);
       return { runs: page.map((row) => stored(runResultSchema, row.summary_json)),
         nextCursor: rows.length > limit && page.length > 0
-          ? Buffer.from(JSON.stringify({ projectId, startedAt: page[page.length - 1]!.started_at, id: page[page.length - 1]!.id })).toString('base64url')
+          ? Buffer.from(JSON.stringify({ projectId, startedAt: page[page.length - 1]!.sort_at, id: page[page.length - 1]!.id })).toString('base64url')
           : null };
     } catch (error) { failure(error); }
   }

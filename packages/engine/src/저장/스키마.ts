@@ -19,7 +19,7 @@ const utc = (column: string) => `length(${column}) >= 20 AND substr(${column}, -
 
 export const schemaSql = `
 CREATE TABLE schema_migrations (
-  version INTEGER PRIMARY KEY CHECK (version > 0),
+  version INTEGER PRIMARY KEY CHECK (typeof(version) = 'integer' AND version > 0),
   checksum TEXT NOT NULL CHECK (${hash('checksum')}),
   applied_at TEXT NOT NULL CHECK (${utc('applied_at')}),
   app_version TEXT NOT NULL
@@ -75,7 +75,7 @@ CREATE TABLE requirement_checks (
   catalog_id TEXT NOT NULL,
   requirement_id TEXT NOT NULL,
   check_id TEXT NOT NULL,
-  required INTEGER NOT NULL CHECK (required IN (0, 1)),
+  required INTEGER NOT NULL CHECK (typeof(required) = 'integer' AND required IN (0, 1)),
   requirement_kind TEXT NOT NULL DEFAULT 'requirement' CHECK (requirement_kind = 'requirement'),
   check_kind TEXT NOT NULL DEFAULT 'check' CHECK (check_kind = 'check'),
   PRIMARY KEY (catalog_id, requirement_id, check_id),
@@ -130,7 +130,7 @@ CREATE TABLE runs (
   state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'finished', 'blocked', 'cancelled', 'unverifiable')),
   verdict TEXT CHECK (verdict IS NULL OR verdict IN ('passed', 'failed', 'incomplete', 'unknown')),
   phase TEXT NOT NULL CHECK (length(phase) > 0),
-  worker_exit_code INTEGER,
+  worker_exit_code INTEGER CHECK (worker_exit_code IS NULL OR typeof(worker_exit_code) = 'integer'),
   started_at TEXT NOT NULL CHECK (${utc('started_at')}),
   finished_at TEXT CHECK (finished_at IS NULL OR ${utc('finished_at')}),
   finalized_at TEXT CHECK (finalized_at IS NULL OR ${utc('finalized_at')}),
@@ -149,9 +149,9 @@ CREATE TABLE requests (
 CREATE TABLE steps (
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
   step_id TEXT NOT NULL,
-  ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+  ordinal INTEGER NOT NULL CHECK (typeof(ordinal) = 'integer' AND ordinal > 0),
   status TEXT NOT NULL CHECK (length(status) > 0),
-  exit_code INTEGER,
+  exit_code INTEGER CHECK (exit_code IS NULL OR typeof(exit_code) = 'integer'),
   observed_json TEXT NOT NULL CHECK (${json('observed_json')}),
   PRIMARY KEY (run_id, step_id),
   UNIQUE (run_id, ordinal)
@@ -160,7 +160,7 @@ CREATE TABLE steps (
 CREATE TABLE case_results (
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
   test_id TEXT NOT NULL,
-  attempt INTEGER NOT NULL CHECK (attempt > 0),
+  attempt INTEGER NOT NULL CHECK (typeof(attempt) = 'integer' AND attempt > 0),
   requirement_id TEXT,
   status TEXT NOT NULL CHECK (status IN ('passed', 'failed', 'not-run', 'skipped', 'timed-out', 'interrupted', 'unknown')),
   severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'error', 'critical')),
@@ -175,7 +175,7 @@ CREATE TABLE evidence (
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
   relative_path TEXT NOT NULL CHECK (length(relative_path) > 0),
   sha256 TEXT NOT NULL CHECK (${hash('sha256')}),
-  byte_length INTEGER NOT NULL CHECK (byte_length >= 0),
+  byte_length INTEGER NOT NULL CHECK (typeof(byte_length) = 'integer' AND byte_length >= 0),
   mime TEXT NOT NULL CHECK (length(mime) > 0),
   sensitivity TEXT NOT NULL CHECK (length(sensitivity) > 0),
   state TEXT NOT NULL CHECK (state IN ('staged', 'ready', 'missing', 'quarantined')),
@@ -205,7 +205,7 @@ CREATE TABLE resources (
 
 CREATE TABLE events (
   run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
-  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  sequence INTEGER NOT NULL CHECK (typeof(sequence) = 'integer' AND sequence > 0),
   type TEXT NOT NULL CHECK (type IN ('step-started', 'case-result', 'evidence-created', 'resource-intent', 'resource-created', 'resource-cleaned', 'step-finished', 'worker-finished')),
   recorded_at TEXT NOT NULL CHECK (${utc('recorded_at')}),
   payload_json TEXT NOT NULL CHECK (${json('payload_json')}),

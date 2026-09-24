@@ -117,6 +117,41 @@ describe('SQLite 저장 스키마', () => {
     }
   });
 
+  it('정수 의미 열은 소수와 숫자가 아닌 텍스트를 모두 거절하고 nullable 종료코드는 NULL을 허용한다.', () => {
+    const connection = open();
+    const ids = seed();
+    connection.prepare('INSERT INTO definitions (catalog_id, kind, definition_id, content_json) VALUES (?, ?, ?, ?)')
+      .run(ids.catalogId, 'requirement', 'requirement-1', '{}');
+    connection.prepare('INSERT INTO definitions (catalog_id, kind, definition_id, content_json) VALUES (?, ?, ?, ?)')
+      .run(ids.catalogId, 'check', 'check-1', '{}');
+    const cases: { column: string; sql: string; values: (value: number | string) => unknown[] }[] = [
+      { column: 'version', sql: 'UPDATE schema_migrations SET version = ? WHERE version = 1', values: (value) => [value] },
+      { column: 'required', sql: 'INSERT INTO requirement_checks (catalog_id, requirement_id, check_id, required) VALUES (?, ?, ?, ?)',
+        values: (value) => [ids.catalogId, 'requirement-1', 'check-1', value] },
+      { column: 'worker_exit_code', sql: 'UPDATE runs SET worker_exit_code = ? WHERE id = ?', values: (value) => [value, ids.runId] },
+      { column: 'ordinal', sql: 'INSERT INTO steps (run_id, step_id, ordinal, status, observed_json) VALUES (?, ?, ?, ?, ?)',
+        values: (value) => [ids.runId, randomUUID(), value, 'finished', '{}'] },
+      { column: 'exit_code', sql: 'INSERT INTO steps (run_id, step_id, ordinal, status, exit_code, observed_json) VALUES (?, ?, ?, ?, ?, ?)',
+        values: (value) => [ids.runId, randomUUID(), 1, 'finished', value, '{}'] },
+      { column: 'attempt', sql: 'INSERT INTO case_results (run_id, test_id, attempt, status, severity) VALUES (?, ?, ?, ?, ?)',
+        values: (value) => [ids.runId, 'check-1', value, 'passed', 'info'] },
+      { column: 'byte_length', sql: 'INSERT INTO evidence (id, run_id, relative_path, sha256, byte_length, mime, sensitivity, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        values: (value) => [randomUUID(), ids.runId, `${randomUUID()}.txt`, digest('f'), value, 'text/plain', 'internal', 'ready'] },
+      { column: 'sequence', sql: 'INSERT INTO events (run_id, sequence, type, recorded_at, payload_json) VALUES (?, ?, ?, ?, ?)',
+        values: (value) => [ids.runId, value, 'step-started', time, '{}'] },
+    ];
+    for (const { column, sql, values } of cases) {
+      for (const value of [1.5, 'not-an-integer']) {
+        expect(() => connection.prepare(sql).run(...values(value)), `${column}=${value}`).toThrow();
+      }
+    }
+    connection.prepare('UPDATE runs SET worker_exit_code = NULL WHERE id = ?').run(ids.runId);
+    connection.prepare('INSERT INTO steps (run_id, step_id, ordinal, status, exit_code, observed_json) VALUES (?, ?, ?, ?, NULL, ?)')
+      .run(ids.runId, 'nullable-step', 1, 'finished', '{}');
+    expect(connection.prepare('SELECT worker_exit_code FROM runs WHERE id = ?').get(ids.runId)).toEqual({ worker_exit_code: null });
+    expect(connection.prepare('SELECT exit_code FROM steps WHERE step_id = ?').get('nullable-step')).toEqual({ exit_code: null });
+  });
+
   it('requirement와 check 종류 및 같은 프로젝트 연결을 강제한다.', () => {
     const connection = open();
     const ids = seed();
