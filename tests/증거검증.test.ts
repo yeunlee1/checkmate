@@ -1,10 +1,40 @@
 // 합성 파일로 증거 경로와 크기 및 해시 검증 경계를 확인한다.
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, mkdtemp, readFile, rm, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { verifyEvidence, type EvidenceManifestEntry } from '../packages/engine/src/증거검증.js';
+
+const finalLstat = vi.hoisted(() => ({
+  target: '',
+  calls: 0,
+  change: undefined as undefined | (() => Promise<void>),
+  observed: undefined as undefined | { size: string; mtimeNs: string; ctimeNs: string },
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      const target = String(args[0]) === finalLstat.target;
+      if (target) {
+        finalLstat.calls += 1;
+        if (finalLstat.calls === 3) await finalLstat.change?.();
+      }
+      const info = await actual.lstat(...args);
+      if (target && finalLstat.calls === 3) {
+        finalLstat.observed = {
+          size: String(info.size),
+          mtimeNs: String(info.mtimeNs),
+          ctimeNs: String(info.ctimeNs),
+        };
+      }
+      return info;
+    },
+  };
+});
 
 const tempBase = resolve(tmpdir());
 let root: string;
@@ -68,6 +98,42 @@ describe('증거 파일 검증', () => {
     const manifest = entry('정상.txt', content);
     expect(await verifyEvidence(root, { ...manifest, byteLength: content.length - 1 })).toEqual({ status: 'size-mismatch' });
     expect(await verifyEvidence(root, { ...manifest, sha256: '0'.repeat(64) })).toEqual({ status: 'hash-mismatch' });
+  });
+
+  it.each(['추가 쓰기', '같은 크기 덮어쓰기'])('마지막 경로 확인 직전 %s를 감지한다.', async (mode) => {
+    const name = mode === '추가 쓰기' ? '추가변경.txt' : '같은크기변경.txt';
+    const path = join(root, name);
+    const original = Buffer.from('original-evidence');
+    await writeFile(path, original);
+    const initial = await lstat(path, { bigint: true });
+    const replacement = Buffer.alloc(original.length, 0x78);
+    finalLstat.target = path;
+    finalLstat.calls = 0;
+    finalLstat.observed = undefined;
+    finalLstat.change = mode === '추가 쓰기'
+      ? () => appendFile(path, '-changed')
+      : async () => {
+        await writeFile(path, replacement);
+        await utimes(path, new Date('2001-01-01'), new Date('2001-01-01'));
+      };
+    try {
+      const manifest = entry(name, original);
+      const result = await verifyEvidence(root, manifest);
+      expect(finalLstat.calls).toBe(3);
+      expect(finalLstat.observed).toBeDefined();
+      expect(createHash('sha256').update(await readFile(path)).digest('hex')).not.toBe(manifest.sha256);
+      if (mode === '추가 쓰기') {
+        expect(finalLstat.observed?.size).not.toBe(String(initial.size));
+      } else {
+        expect(finalLstat.observed?.size).toBe(String(initial.size));
+        expect(finalLstat.observed?.mtimeNs === String(initial.mtimeNs)
+          && finalLstat.observed?.ctimeNs === String(initial.ctimeNs)).toBe(false);
+      }
+      expect(result).toEqual({ status: 'changed-during-read' });
+    } finally {
+      finalLstat.target = '';
+      finalLstat.change = undefined;
+    }
   });
 
   it('잘못된 manifest 필드를 거절한다.', async () => {

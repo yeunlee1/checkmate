@@ -106,7 +106,7 @@ export async function verifyEvidence(root: string, manifestEntry: unknown): Prom
       if (!unchanged(before, after)) return failure('changed-during-read');
       const finalPathInfo = await lstat(path, { bigint: true });
       if (finalPathInfo.isSymbolicLink() || !within(realRoot, await realpath(path))
-        || after.dev !== finalPathInfo.dev || after.ino !== finalPathInfo.ino) {
+        || !unchanged(after, finalPathInfo)) {
         return failure('changed-during-read');
       }
       if (total !== byteLength) return failure('changed-during-read');
