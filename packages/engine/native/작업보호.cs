@@ -155,6 +155,43 @@ internal static class OwnedJob
         File.WriteAllText(path, value, new UTF8Encoding(false));
     }
 
+    private static void ReadExact(Stream input, byte[] bytes)
+    {
+        int at = 0;
+        while (at < bytes.Length)
+        {
+            int count = input.Read(bytes, at, bytes.Length - at);
+            if (count == 0) throw new EndOfStreamException();
+            at += count;
+        }
+    }
+
+    private static System.Collections.Generic.SortedDictionary<string, string> ReadEnvironment(Stream input)
+    {
+        byte[] header = new byte[4];
+        ReadExact(input, header);
+        uint length = (uint)(header[0] | header[1] << 8 | header[2] << 16 | header[3] << 24);
+        if (length < 4 || length > 1024 * 1024 || (length & 1) != 0) throw new ArgumentException();
+        byte[] bytes = new byte[(int)length];
+        ReadExact(input, bytes);
+        string block = new UnicodeEncoding(false, false, true).GetString(bytes);
+        if (!block.EndsWith("\0\0", StringComparison.Ordinal)) throw new ArgumentException();
+        var env = new System.Collections.Generic.SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (block.Length == 2) return env;
+        int at = 0;
+        while (at < block.Length - 1)
+        {
+            int end = block.IndexOf('\0', at);
+            if (end <= at || end >= block.Length - 1) throw new ArgumentException();
+            int separator = block.IndexOf('=', at, end - at);
+            if (separator <= at) throw new ArgumentException();
+            env.Add(block.Substring(at, separator - at), block.Substring(separator + 1, end - separator - 1));
+            at = end + 1;
+        }
+        if (at != block.Length - 1) throw new ArgumentException();
+        return env;
+    }
+
     private static int Main(string[] args)
     {
         if (args.Length < 6) return 233;
@@ -167,14 +204,14 @@ internal static class OwnedJob
         {
             string application = args[1], directory = args[2];
             int waitMs = int.Parse(args[3]);
-            int envCount = int.Parse(args[4]);
+            if (args[4] != "stdin-env-v1") throw new ArgumentException();
             int at = 5;
-            var env = new System.Collections.Generic.SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < envCount; i++) { env.Add(args[at++], args[at++]); }
             int argCount = int.Parse(args[at++]);
             if (at + argCount != args.Length) throw new ArgumentException();
             var command = new StringBuilder(Quote(application));
             for (int i = 0; i < argCount; i++) command.Append(' ').Append(Quote(args[at++]));
+            Stream control = Console.OpenStandardInput();
+            var env = ReadEnvironment(control);
             var envBlock = new StringBuilder();
             foreach (var item in env) envBlock.Append(item.Key).Append('=').Append(item.Value).Append('\0');
             envBlock.Append('\0');
@@ -225,7 +262,7 @@ internal static class OwnedJob
             stdout.Start(); stderr.Start();
             stdoutRead = IntPtr.Zero; stderrRead = IntPtr.Zero;
             ThreadPool.QueueUserWorkItem(_ => {
-                try { Console.OpenStandardInput().ReadByte(); cancelRequested = true; }
+                try { control.ReadByte(); cancelRequested = true; }
                 catch { cancelRequested = true; }
             });
             if (ResumeThread(process.hThread) == uint.MaxValue)
