@@ -13,6 +13,10 @@ const finalLstat = vi.hoisted(() => ({
   observed: undefined as undefined | { size: string; mtimeNs: string; ctimeNs: string },
 }));
 
+function readFinalObservation(): typeof finalLstat.observed {
+  return finalLstat.observed;
+}
+
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -24,7 +28,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         if (finalLstat.calls === 3) await finalLstat.change?.();
       }
       const info = await actual.lstat(...args);
-      if (target && finalLstat.calls === 3) {
+      if (target && finalLstat.calls === 3 && 'mtimeNs' in info && 'ctimeNs' in info) {
         finalLstat.observed = {
           size: String(info.size),
           mtimeNs: String(info.mtimeNs),
@@ -119,15 +123,17 @@ describe('증거 파일 검증', () => {
     try {
       const manifest = entry(name, original);
       const result = await verifyEvidence(root, manifest);
+      const observed = readFinalObservation();
       expect(finalLstat.calls).toBe(3);
-      expect(finalLstat.observed).toBeDefined();
+      expect(observed).toBeDefined();
+      if (!observed) throw new Error('마지막 lstat 관측값이 없습니다.');
       expect(createHash('sha256').update(await readFile(path)).digest('hex')).not.toBe(manifest.sha256);
       if (mode === '추가 쓰기') {
-        expect(finalLstat.observed?.size).not.toBe(String(initial.size));
+        expect(observed.size).not.toBe(String(initial.size));
       } else {
-        expect(finalLstat.observed?.size).toBe(String(initial.size));
-        expect(finalLstat.observed?.mtimeNs === String(initial.mtimeNs)
-          && finalLstat.observed?.ctimeNs === String(initial.ctimeNs)).toBe(false);
+        expect(observed.size).toBe(String(initial.size));
+        expect(observed.mtimeNs === String(initial.mtimeNs)
+          && observed.ctimeNs === String(initial.ctimeNs)).toBe(false);
       }
       expect(result).toEqual({ status: 'changed-during-read' });
     } finally {
