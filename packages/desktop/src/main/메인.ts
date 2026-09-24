@@ -8,6 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contracts/api';
 import { callService, initializeLocalStore } from '@checkmate/engine/client';
 import { exportRunHtml } from '@checkmate/engine/report';
+import { ensureLauncher, handleSquirrelEvent, hasOwnedDataRoot } from './설치연결.js';
+
+let squirrelExitCode: number | null = null;
+try { if (app.isPackaged && handleSquirrelEvent(process.argv[1])) squirrelExitCode = 0; }
+catch (error) { console.error(error); squirrelExitCode = 1; }
+if (squirrelExitCode !== null) app.exit(squirrelExitCode);
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const dataRoot = process.env.CHECKMATE_DATA_DIR ?? join(app.getPath('appData'), '..', 'Local', 'CheckMate');
@@ -26,8 +32,18 @@ function options() {
   if (!nodeExecutable) throw new ServiceError('node-runtime-missing', '개발용 Node 실행 경로가 없습니다. desktop:dev로 실행해 주세요.');
   return { dataRoot, nodeExecutable, serviceEntry };
 }
+async function refreshLauncher(): Promise<void> {
+  if (!app.isPackaged) return;
+  try {
+    if (await hasOwnedDataRoot(dataRoot)) await ensureLauncher(dataRoot, options().nodeExecutable, cliEntry);
+  } catch (error) {
+    console.error(error);
+    dialog.showErrorBox('CLI 진입점 준비 실패', error instanceof Error ? error.message : String(error));
+  }
+}
 
-if (!app.requestSingleInstanceLock()) app.quit();
+if (squirrelExitCode !== null) { /* 설치 이벤트는 창과 단일 실행 잠금을 사용하지 않는다. */ }
+else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus(); });
   void app.whenReady().then(async () => {
@@ -35,6 +51,7 @@ else {
   Menu.setApplicationMenu(null);
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
+  await refreshLauncher();
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 800, minHeight: 600, title: 'CheckMate', backgroundColor: '#f5f7fb',
     webPreferences: { preload: join(here, '..', 'preload', '연결.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   });
@@ -67,7 +84,11 @@ else {
     const result = await dialog.showOpenDialog(window!, { title: '아틀리에 과거 보고서 선택', filters: [{ name: 'JSON 보고서', extensions: ['json'] }], properties: ['openFile'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  ipcMain.handle('checkmate:initialize', async (event) => { checkSender(event); await initializeLocalStore(options()); });
+  ipcMain.handle('checkmate:initialize', async (event) => {
+    checkSender(event);
+    await initializeLocalStore(options());
+    await refreshLauncher();
+  });
   ipcMain.handle('checkmate:export', async (event, runId: unknown) => {
     checkSender(event);
     const id = randomUUID();
@@ -88,7 +109,8 @@ else {
   await window.loadURL(expectedUrl);
   window.on('closed', () => { window = null; });
   app.on('window-all-closed', () => app.quit());
-  }).catch(() => {
+  }).catch((error) => {
+    console.error(error);
     dialog.showErrorBox('CheckMate 시작 실패', '앱 화면을 준비하지 못했습니다. 앱을 다시 시작해 주세요.');
     app.exit(1);
   });

@@ -22,15 +22,21 @@
     "desktop:test": "node scripts/데스크톱검증.mjs"
   },
   "overrides": {
-    "qs": "6.16.0"
+    "qs": "6.16.0",
+    "@electron/rebuild": "4.2.0",
+    "extract-zip": "npm:@electron-internal/extract-zip@1.0.5",
+    "tar": "7.5.22"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",
+    "@electron-forge/core": "7.11.2",
+    "@electron-forge/maker-squirrel": "7.11.2",
     "@playwright/test": "1.63.0",
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.6",
+    "esbuild": "0.28.2",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
   }
