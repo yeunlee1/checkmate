@@ -26,7 +26,11 @@ $failTitles = @(
     '검사 verification result output',
     'Merge branch develop',
     'Revert "검사 결과 표시 변경"',
-    'chore: Merge branch develop'
+    'chore: Merge branch develop',
+    ('fix: 검사 결과 표시 수정 ' + [char] 0x4E00),
+    ('fix: 검사 결과 표시 수정 ' + [char] 0x3042),
+    ('fix: 검사 결과 표시 수정 ' + [char] 0x30A2),
+    ('fix: 검사 결과 표시 수정 ' + [char]::ConvertFromUtf32(0x20000))
 )
 
 foreach ($title in $passTitles) {
@@ -38,13 +42,23 @@ foreach ($title in $failTitles) {
     if ($LASTEXITCODE -eq 0) { throw "거절 제목이 허용되었습니다. $title" }
 }
 
+foreach ($reference in @('main', 'develop', 'work/2026-09-25-상세설계확정', 'refs/tags/v0.1.0')) {
+    & $policyScript -ReferenceName $reference *> $null
+    if ($LASTEXITCODE -ne 0) { throw '한글과 영어로 작성한 참조 이름이 거절되었습니다.' }
+}
+& $policyScript -ReferenceName ('work/2026-09-25-' + [char] 0x4E00) *> $null
+if ($LASTEXITCODE -eq 0) { throw '허용하지 않는 글자가 포함된 참조 이름을 차단하지 못했습니다.' }
+
 $messageFile = [System.IO.Path]::GetTempFileName()
 try {
     [System.IO.File]::WriteAllText($messageFile, "# 작성 안내`n`nfix: 검사 결과 표시 오류 수정`n`n본문은 제목 검사에 포함하지 않습니다.`n", [System.Text.UTF8Encoding]::new($true))
     & $policyScript -CommitMessageFile $messageFile *> $null
     if ($LASTEXITCODE -ne 0) { throw '주석·빈 줄·본문이 포함된 커밋 파일 검사가 실패했습니다.' }
+    [System.IO.File]::AppendAllText($messageFile, [string] [char] 0x4E00, [System.Text.UTF8Encoding]::new($false))
+    & $policyScript -CommitMessageFile $messageFile *> $null
+    if ($LASTEXITCODE -eq 0) { throw '커밋 본문의 허용하지 않는 글자를 차단하지 못했습니다.' }
 } finally {
     Remove-Item -LiteralPath $messageFile
 }
 
-Write-Host "제목 정책 검증 통과. 허용 $($passTitles.Count)건, 거절 $($failTitles.Count)건, 커밋 파일 1건."
+Write-Host "제목 정책 검증 통과. 허용 $($passTitles.Count)건, 거절 $($failTitles.Count)건, 참조 이름 5건, 커밋 파일 2건."
