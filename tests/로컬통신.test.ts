@@ -1,12 +1,12 @@
 // 실제 로컬 소켓의 양방향 인증과 사람 전용 작업 경계를 검증한다.
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createConnection } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ApiRequest } from '@checkmate/contracts/api';
-import { dataPaths, prepareDataPaths } from '../packages/engine/src/연결/개인경로.js';
+import { dataPaths, prepareDataPaths, verifyLocalEndpoint } from '../packages/engine/src/연결/개인경로.js';
 import { requestLocal, serveLocal } from '../packages/engine/src/연결/로컬통신.js';
 import { JsonFrames } from '../packages/engine/src/연결/프레임.js';
 
@@ -25,6 +25,28 @@ async function fixture() {
 const request = (method: ApiRequest['method'] = 'capabilities'): ApiRequest => ({ apiVersion: 1, requestId: randomUUID(), method, input: {} });
 
 describe('실제 로컬 통신', () => {
+  it.runIf(process.platform === 'linux')('긴 한글 자료 경로에서도 짧은 사용자 전용 소켓으로 연결한다', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'checkmate-long-path-'));
+    cleanups.push(() => rm(parent, { recursive: true, force: true }));
+    const paths = dataPaths(join(parent, '한글'.repeat(32)));
+    expect(Buffer.byteLength(join(paths.runtime, 'service.sock'), 'utf8')).toBeGreaterThan(107);
+    expect(Buffer.byteLength(paths.endpoint, 'utf8')).toBeLessThanOrEqual(107);
+    await prepareDataPaths(paths);
+    const directory = await lstat(dirname(paths.endpoint));
+    expect(directory.uid).toBe(process.getuid!());
+    expect(directory.mode & 0o077).toBe(0);
+    const unsafe = join(parent, 'unsafe');
+    await mkdir(unsafe);
+    await chmod(unsafe, 0o755);
+    await expect(verifyLocalEndpoint({ ...paths, endpoint: join(unsafe, 'socket') })).rejects.toMatchObject({ code: 'unsafe-path' });
+    await chmod(unsafe, 0o700);
+    const linked = join(parent, 'linked');
+    await symlink(unsafe, linked);
+    await expect(verifyLocalEndpoint({ ...paths, endpoint: join(linked, 'socket') })).rejects.toMatchObject({ code: 'unsafe-path' });
+    const service = await serveLocal(paths, async (value) => ({ apiVersion: 1, requestId: value.requestId, ok: true, data: {} }));
+    cleanups.push(service.close);
+    expect(await requestLocal(paths, request())).toMatchObject({ ok: true });
+  });
   it('인증된 연결의 응답을 받고 에이전트의 사람 전용 작업을 거절한다', async () => {
     const f = await fixture();
     expect(await requestLocal(f.paths, request())).toMatchObject({ ok: true, data: { method: 'capabilities' } });

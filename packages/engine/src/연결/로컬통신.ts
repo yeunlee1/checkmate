@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { apiRequestSchema, apiResponseSchema, errorResponse, humanMethods, ServiceError } from '@checkmate/contracts/api';
 import type { ApiRequest, ApiResponse } from '@checkmate/contracts/api';
 import { JsonFrames } from './프레임.js';
-import { readConnectionSecret } from './개인경로.js';
+import { readConnectionSecret, verifyLocalEndpoint } from './개인경로.js';
 import type { DataPaths } from './개인경로.js';
 
 export type ClientRole = 'human' | 'agent';
@@ -24,6 +24,7 @@ function matches(actual: string, expected: string): boolean {
 }
 
 export async function serveLocal(paths: DataPaths, handler: RequestHandler): Promise<{ server: Server; close: () => Promise<void>; connections: () => number }> {
+  await verifyLocalEndpoint(paths);
   const secret = await readConnectionSecret(paths);
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
@@ -50,7 +51,9 @@ export async function serveLocal(paths: DataPaths, handler: RequestHandler): Pro
   });
   server.maxConnections = 64;
   await new Promise<void>((resolve, reject) => {
-    const onError = () => reject(new ServiceError('service-already-running', '서비스 연결 경로가 이미 사용 중입니다.', true));
+    const onError = (error: NodeJS.ErrnoException) => reject(error.code === 'EADDRINUSE'
+      ? new ServiceError('service-already-running', '서비스 연결 경로가 이미 사용 중입니다.', true)
+      : new ServiceError('service-listen-failed', `서비스 연결 경로를 열 수 없습니다. ${error.code ?? 'unknown'}`));
     server.once('error', onError);
     server.listen({ path: paths.endpoint, readableAll: false, writableAll: false, exclusive: true }, () => { server.off('error', onError); resolve(); });
   });
@@ -63,6 +66,7 @@ export async function serveLocal(paths: DataPaths, handler: RequestHandler): Pro
 
 export async function requestLocal(paths: DataPaths, request: ApiRequest, role: ClientRole = 'human'): Promise<ApiResponse> {
   const parsed = apiRequestSchema.parse(request);
+  await verifyLocalEndpoint(paths);
   const secret = await readConnectionSecret(paths);
   const socket = createConnection({ path: paths.endpoint });
   const frames = new JsonFrames(socket);

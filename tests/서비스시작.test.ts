@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
@@ -36,11 +36,15 @@ it('한글과 공백 경로에 전용 자료를 동시 초기화해 기존 비�
 
 it.runIf(process.platform === 'win32')('Windows DACL은 상속을 끊고 현재 사용자 SID만 허용한다', async () => {
   const paths = await fixture();
+  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const parentPath = Buffer.from(dirname(paths.root), 'utf8').toString('base64');
+  const parentScript = `$path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${parentPath}')); [IO.Directory]::GetAccessControl($path).Sddl`;
+  const parentAcl = async () => (await execute(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(parentScript, 'utf16le').toString('base64')], { windowsHide: true })).stdout.trim();
+  const originalParentAcl = await parentAcl();
   await prepareDataPaths(paths);
   const encoded = [paths.root, paths.state, paths.runs, paths.runtime, join(paths.root, '체크메이트자료.json'), paths.secret]
     .map((path) => `'${Buffer.from(path, 'utf8').toString('base64')}'`).join(',');
   const script = `$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(${encoded}); $result=@(foreach($item in $items) { $path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($item)); $acl=if ([IO.File]::Exists($path)) { [IO.File]::GetAccessControl($path) } else { [IO.Directory]::GetAccessControl($path) }; [PSCustomObject]@{ sid=$sid; owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; protected=$acl.AreAccessRulesProtected; access=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value + ':' + $_.AccessControlType.ToString() }) } }); ConvertTo-Json -InputObject $result -Compress`;
-  const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const { stdout } = await execute(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true });
   const rows = JSON.parse(stdout) as { sid: string; owner: string; protected: boolean; access: string[] }[];
   expect(rows).toHaveLength(6);
@@ -49,6 +53,7 @@ it.runIf(process.platform === 'win32')('Windows DACL은 상속을 끊고 현재 
     expect(row.protected).toBe(true);
     expect(row.access).toEqual([`${row.sid}:Allow`]);
   }
+  expect(await parentAcl()).toBe(originalParentAcl);
 });
 
 it('손상된 소유 표식을 보존하고 살아 있는 서비스의 두 번째 시작을 거절한다', async () => {

@@ -1,6 +1,7 @@
 // 사용자별 서비스 자료 경로와 비밀 파일의 접근 권한을 준비한다.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { chmod, lstat, mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve } from 'node:path';
@@ -11,8 +12,9 @@ export function dataPaths(root = process.env.CHECKMATE_DATA_DIR ?? join(process.
   if (!isAbsolute(root) || resolve(root) === parse(root).root) throw new ServiceError('invalid-path', '전용 자료 폴더의 절대 경로가 필요합니다.');
   const resolved = resolve(root);
   const key = createHash('sha256').update(process.platform === 'win32' ? resolved.toLowerCase() : resolved).digest('hex').slice(0, 24);
+  // 서비스 자식 프로세스에도 같은 짧은 Unix 소켓 주소를 제공한다.
   return { root: resolved, state: join(resolved, 'state'), runs: join(resolved, 'runs'), runtime: join(resolved, 'runtime'), secret: join(resolved, 'runtime', '연결비밀'),
-    endpoint: process.platform === 'win32' ? `\\\\.\\pipe\\CheckMate-${key}` : join(resolved, 'runtime', 'service.sock') };
+    endpoint: process.platform === 'win32' ? `\\\\.\\pipe\\CheckMate-${key}` : join(realpathSync('/tmp'), `checkmate-${process.getuid!()}`, `${key}.sock`) };
 }
 
 export async function rejectLinks(path: string): Promise<void> {
@@ -29,10 +31,24 @@ async function makePrivate(path: string, file = false): Promise<void> {
   const encodedPath = Buffer.from(path, 'utf8').toString('base64');
   const access = file ? 'File' : 'Directory';
   const inheritance = file ? 'None' : 'ContainerInherit,ObjectInherit';
-  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[IO.${access}]::GetAccessControl($target); if (-not $acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($sid)) { throw 'owner-mismatch' }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${access}]::SetAccessControl($target,$acl)`;
+  // 높은 권한 토큰이 만든 전용 파일은 토큰 기본 소유자에서 사용자로 이전한다.
+  const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedPath}')); $identity=[Security.Principal.WindowsIdentity]::GetCurrent(); $sid=$identity.User; $acl=[IO.${access}]::GetAccessControl($target); $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]); if (-not $owner.Equals($sid)) { if (-not $owner.Equals($identity.Owner)) { throw 'owner-mismatch' }; $acl.SetOwner($sid) }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${access}]::SetAccessControl($target,$acl)`;
   const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  try { execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore', timeout: 15000 }); }
-  catch { throw new ServiceError('private-directory-failed', '사용자 전용 폴더 권한을 설정할 수 없습니다.'); }
+  try { execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], timeout: 15000 }); }
+  catch (error) { const failure = new ServiceError('private-directory-failed', '사용자 전용 폴더 권한을 설정할 수 없습니다.'); failure.cause = error; throw failure; }
+}
+
+export async function verifyLocalEndpoint(paths: DataPaths): Promise<void> {
+  if (process.platform === 'win32') return;
+  await rejectLinks(paths.endpoint);
+  let directory;
+  try { directory = await lstat(dirname(paths.endpoint)); }
+  catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new ServiceError('service-unavailable', '서비스 연결 폴더가 없습니다.', true);
+    throw error;
+  }
+  if (!directory.isDirectory() || directory.uid !== process.getuid!() || (directory.mode & 0o077) !== 0)
+    throw new ServiceError('unsafe-path', '사용자 전용 연결 폴더의 소유자나 권한이 올바르지 않습니다.');
 }
 
 export async function prepareDataPaths(paths: DataPaths): Promise<void> {
@@ -82,11 +98,16 @@ export async function prepareDataPaths(paths: DataPaths): Promise<void> {
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error; }
   await makePrivate(paths.secret, true);
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    try { await readConnectionSecret(paths); return; }
+    try { await readConnectionSecret(paths); break; }
     catch (error) {
       if (!(error instanceof ServiceError && error.code === 'invalid-service-secret') || attempt === 19) throw error;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+  }
+  if (process.platform !== 'win32') {
+    await rejectLinks(dirname(paths.endpoint));
+    await mkdir(dirname(paths.endpoint), { recursive: true, mode: 0o700 });
+    await verifyLocalEndpoint(paths);
   }
 }
 
