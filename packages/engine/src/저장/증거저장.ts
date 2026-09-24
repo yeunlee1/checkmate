@@ -1,7 +1,7 @@
-// 실행별 증거의 실제 파일과 SQLite 목록을 연결하고 안전한 텍스트 조회를 제공한다.
-import { constants, realpathSync } from 'node:fs';
+// 실행별 증거의 실제 파일과 SQLite 목록을 연결하고 안전한 텍스트와 PNG 조회를 제공한다.
+import { constants, lstatSync, realpathSync } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
@@ -17,6 +17,21 @@ const inputSchema = z.strictObject({
 const descriptorSchema = inputSchema.extend({ runId: uuid, state: z.enum(['staged', 'ready', 'missing', 'quarantined']) });
 const cursorSchema = z.strictObject({ runId: uuid, evidenceId: uuid,
   sha256: inputSchema.shape.sha256, offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
+const imageCursorSchema = cursorSchema.extend({ kind: z.literal('image/png') });
+const imageChunkBytes = 23 * 1024;
+const imageMaxBytes = 8 * 1024 * 1024;
+const imageMaxSide = 8192;
+const imageMaxPixels = 16 * 1024 * 1024;
+const pngSignature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+
+function pngCrc(bytes: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
 
 export type EvidenceDescriptor = z.infer<typeof descriptorSchema>;
 export type EvidenceInput = z.infer<typeof inputSchema>;
@@ -58,10 +73,15 @@ export class EvidenceStore {
     if (typeof runsRoot !== 'string' || !isAbsolute(runsRoot)) throw new EvidenceStoreError('invalid-input');
     try {
       const root = resolve(runsRoot);
+      let ancestor = parse(root).root;
+      if (lstatSync(ancestor).isSymbolicLink()) throw new Error('linked-root');
+      for (const part of relative(ancestor, root).split(sep).filter(Boolean)) {
+        ancestor = join(ancestor, part);
+        const info = lstatSync(ancestor);
+        if (info.isSymbolicLink() || !info.isDirectory()) throw new Error('linked-root');
+      }
       const actual = realpathSync.native(root);
-      if (!isDeepStrictEqual(process.platform === 'win32' ? root.toLowerCase() : root,
-        process.platform === 'win32' ? actual.toLowerCase() : actual)) throw new Error('linked-root');
-      this.runsRoot = root;
+      this.runsRoot = actual;
     } catch { throw new EvidenceStoreError('invalid-input'); }
   }
 
@@ -208,6 +228,88 @@ export class EvidenceStore {
     const result = resultAt(low);
     if (Buffer.byteLength(JSON.stringify(result)) > limit || (low === 0 && offset < evidence.byteLength))
       throw new EvidenceStoreError('invalid-input');
+    return result;
+  }
+
+  async readImage(runId: string, evidenceId: string, options: { cursor?: string } = {}): Promise<{
+    base64: string; nextCursor: string | null; integrity: 'verified'; mime: 'image/png';
+    width: number; height: number; sha256: string }> {
+    const evidence = this.get(runId, evidenceId);
+    if (evidence.sensitivity !== 'public' || evidence.mime !== 'image/png')
+      throw new EvidenceStoreError('evidence-restricted');
+    if (typeof options !== 'object' || options === null || Array.isArray(options)
+      || Object.keys(options).some((key) => key !== 'cursor')) throw new EvidenceStoreError('invalid-input');
+    if (evidence.byteLength < 33 || evidence.byteLength > imageMaxBytes) throw new EvidenceStoreError('evidence-degraded');
+    let offset = 0;
+    if (options.cursor !== undefined) {
+      try {
+        if (typeof options.cursor !== 'string' || options.cursor.length > 1024) throw new Error('cursor');
+        const decoded = JSON.parse(Buffer.from(options.cursor, 'base64url').toString('utf8'));
+        const parsed = imageCursorSchema.safeParse(decoded);
+        if (!parsed.success || Buffer.from(JSON.stringify(parsed.data)).toString('base64url') !== options.cursor
+          || parsed.data.runId !== runId || parsed.data.evidenceId !== evidenceId
+          || parsed.data.sha256 !== evidence.sha256 || parsed.data.offset >= evidence.byteLength
+          || parsed.data.offset < 1 || parsed.data.offset % imageChunkBytes !== 0) throw new Error('cursor');
+        offset = parsed.data.offset;
+      } catch { throw new EvidenceStoreError('invalid-input'); }
+    }
+    const first = await this.inspect(runId, evidenceId);
+    if (first.integrity !== 'verified')
+      throw new EvidenceStoreError(first.reason === 'missing' ? 'evidence-missing' : 'evidence-degraded');
+    const path = join(this.root(runId), ...evidence.relativePath.split('/'));
+    let bytes: Buffer;
+    let header: Buffer;
+    try {
+      const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile() || before.size !== BigInt(evidence.byteLength))
+          throw new EvidenceStoreError('evidence-degraded');
+        header = Buffer.alloc(33);
+        let headerBytes = 0;
+        while (headerBytes < header.length) {
+          const part = await handle.read(header, headerBytes, header.length - headerBytes, headerBytes);
+          if (part.bytesRead === 0) break;
+          headerBytes += part.bytesRead;
+        }
+        if (headerBytes !== header.length) throw new EvidenceStoreError('evidence-degraded');
+        bytes = Buffer.alloc(Math.min(imageChunkBytes, evidence.byteLength - offset));
+        let bytesRead = 0;
+        while (bytesRead < bytes.length) {
+          const part = await handle.read(bytes, bytesRead, bytes.length - bytesRead, offset + bytesRead);
+          if (part.bytesRead === 0) break;
+          bytesRead += part.bytesRead;
+        }
+        if (bytesRead !== bytes.length) throw new EvidenceStoreError('evidence-degraded');
+        const after = await handle.stat({ bigint: true });
+        const pathInfo = await lstat(path, { bigint: true });
+        if (!sameFile(before, after) || !sameFile(after, pathInfo) || pathInfo.isSymbolicLink())
+          throw new EvidenceStoreError('evidence-degraded');
+      } finally { await handle.close(); }
+    } catch (error) {
+      if (error instanceof EvidenceStoreError) throw error;
+      throw new EvidenceStoreError((error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'evidence-missing' : 'evidence-degraded');
+    }
+    if (!header.subarray(0, 8).equals(pngSignature) || header.readUInt32BE(8) !== 13
+      || header.toString('ascii', 12, 16) !== 'IHDR') throw new EvidenceStoreError('evidence-degraded');
+    const width = header.readUInt32BE(16);
+    const height = header.readUInt32BE(20);
+    const allowedDepths: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16],
+      3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
+    if (width < 1 || height < 1 || width > imageMaxSide || height > imageMaxSide
+      || width * height > imageMaxPixels || !(allowedDepths[header[25]!] ?? []).includes(header[24]!)
+      || header[26] !== 0 || header[27] !== 0 || (header[28] !== 0 && header[28] !== 1)
+      || pngCrc(header.subarray(12, 29)) !== header.readUInt32BE(29))
+      throw new EvidenceStoreError('evidence-degraded');
+    const second = await this.inspect(runId, evidenceId);
+    if (second.integrity !== 'verified')
+      throw new EvidenceStoreError(second.reason === 'missing' ? 'evidence-missing' : 'evidence-degraded');
+    const nextOffset = offset + bytes.length;
+    const result = { base64: bytes.toString('base64'), nextCursor: nextOffset < evidence.byteLength
+      ? Buffer.from(JSON.stringify({ runId, evidenceId, sha256: evidence.sha256, offset: nextOffset,
+        kind: 'image/png' })).toString('base64url') : null,
+    integrity: 'verified' as const, mime: 'image/png' as const, width, height, sha256: evidence.sha256 };
+    if (Buffer.byteLength(JSON.stringify(result)) > 32 * 1024) throw new EvidenceStoreError('storage-error');
     return result;
   }
 }
