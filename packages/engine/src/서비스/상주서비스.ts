@@ -12,6 +12,8 @@ import { serveLocal } from '../연결/로컬통신.js';
 import { connectStore } from '../저장/연결.js';
 import { EvidenceStore } from '../저장/증거저장.js';
 import { EventStore } from '../저장/이벤트저장.js';
+import { ResourceStore } from '../저장/자원저장.js';
+import { PostgresResources } from '../자원/격리데이터베이스.js';
 import { createProjectExecutor } from './검사실행기.js';
 import { ProductService } from './제품서비스.js';
 
@@ -63,7 +65,8 @@ export async function startLocalService(root?: string, idleMs = 60000): Promise<
     db = connectStore(join(paths.state, 'checkmate.sqlite'));
     const evidence = new EvidenceStore(db, paths.runs);
     const events = new EventStore(db);
-    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events }), paths);
+    const resources = new PostgresResources(new ResourceStore(db));
+    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events, resources }), paths, resources);
     for (const row of db.prepare("SELECT id FROM runs WHERE state IN ('queued','running')").all() as { id: string }[]) {
       const old = product.runs.getRun(row.id)!;
       const queued = old.state === 'queued';

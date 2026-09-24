@@ -1,7 +1,8 @@
 // 승인된 검사 계획을 독립 작업 프로세스에 넘기고 실제 종료와 증거를 대조한다.
 import { fork } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { lstat, mkdir, realpath, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -16,8 +17,12 @@ import { readAdapterEvents } from '../이벤트읽기.js';
 import { rejectLinks } from '../연결/개인경로.js';
 import type { EvidenceStore } from '../저장/증거저장.js';
 import type { EventStore } from '../저장/이벤트저장.js';
+import type { ResourceRecord } from '../저장/자원저장.js';
+import type { PostgresResources } from '../자원/격리데이터베이스.js';
 import type { AdapterEvent } from '@checkmate/contracts/events';
 import type { CommandObservation, FixedCommand, WorkerConfig } from '../작업/검사작업.js';
+import { hideSecrets, hideSecretsInNdjson, hideSecretsInValue } from '../작업/비밀가림.js';
+import { verifyEvidence } from '../증거검증.js';
 
 const evidenceSchema = z.strictObject({ id: z.uuid(), relativePath: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/u), byteLength: z.number().int().nonnegative(),
@@ -32,14 +37,18 @@ const observationSchema = z.strictObject({ kind: z.literal('result'), commandId:
   outcome: outcomeSchema, stdout: z.string().max(256 * 1024), evidence: evidenceSchema });
 const secretPattern = /authorization|cookie|bearer|token|password|secret|api[ _-]?key/iu;
 const uuid = z.uuid();
-type Options = { runsRoot: string; evidenceStore: EvidenceStore; eventStore: EventStore };
+type Options = { runsRoot: string; evidenceStore: EvidenceStore; eventStore: EventStore;
+  resources?: Pick<PostgresResources, 'prepare' | 'cleanup'> };
 type ObservedWorker = { exitCode: number | null; observations: CommandObservation[]; protocolValid: boolean };
 
-function scrub(value: unknown): unknown {
-  if (typeof value === 'string') return secretPattern.test(value) ? '[가림]' : value;
-  if (Array.isArray(value)) return value.map(scrub);
+function scrub(value: unknown, secrets: readonly string[] = []): unknown {
+  if (typeof value === 'string') {
+    const hidden = hideSecrets(value, secrets);
+    return secretPattern.test(hidden) ? '[가림]' : hidden;
+  }
+  if (Array.isArray(value)) return value.map((item) => scrub(item, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) =>
-    [key, secretPattern.test(key) ? '[가림]' : scrub(item)]));
+    [key, secretPattern.test(key) ? '[가림]' : scrub(item, secrets)]));
   return value;
 }
 
@@ -93,9 +102,32 @@ async function fixedCommands(sourceRoot: string, source: ProjectSource, plan: Pl
     if (!inside(sourceRoot, entry) || await realpath(entry) !== entry) throw new Error('명령 진입점이 프로젝트 밖입니다.');
     chosen.push({ id: item.id, entry, args: item.args, timeoutMs: item.timeoutMs,
       env: item.env, resultFormat: item.resultFormat,
+      ...(item.resources ? { resources: item.resources } : {}),
       checkIds: selected.filter((value) => value.commandId === item.id).map((value) => value.id) });
   }
   return { commands: chosen, checks };
+}
+
+async function evidenceHasSecret(root: string, evidence: z.infer<typeof evidenceSchema>, secrets: readonly string[]): Promise<boolean> {
+  if (secrets.length === 0) return false;
+  if (hideSecrets(JSON.stringify(evidence), secrets) !== JSON.stringify(evidence)) return true;
+  const manifest = { relativePath: evidence.relativePath, sha256: evidence.sha256, byteLength: evidence.byteLength };
+  if ((await verifyEvidence(root, manifest)).status !== 'verified') throw new Error('증거 원본을 확인할 수 없습니다.');
+  // 원본 SHA와 안전한 상대 경로를 확인한 뒤 읽고, 등록 전 다시 검증한다.
+  if (evidence.byteLength > 8 * 1024 * 1024) throw new Error('비밀 검사를 위한 증거 크기 제한을 넘었습니다.');
+  const path = join(root, ...evidence.relativePath.split('/'));
+  if (!inside(root, path) || !inside(root, await realpath(path))) throw new Error('증거 경로가 벗어났습니다.');
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  let content: Buffer;
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== evidence.byteLength) throw new Error('증거 파일이 바뀌었습니다.');
+    content = await handle.readFile();
+  } finally { await handle.close(); }
+  if (createHash('sha256').update(content).digest('hex') !== evidence.sha256
+    || (await verifyEvidence(root, manifest)).status !== 'verified') throw new Error('증거 파일이 바뀌었습니다.');
+  return secrets.some((secret) => secret.length > 0 && (content.includes(Buffer.from(secret, 'utf8'))
+    || content.includes(Buffer.from(JSON.stringify(secret).slice(1, -1), 'utf8'))));
 }
 
 function runWorker(config: WorkerConfig, signal: AbortSignal): Promise<ObservedWorker> {
@@ -128,7 +160,8 @@ function runWorker(config: WorkerConfig, signal: AbortSignal): Promise<ObservedW
       const parsed = observationSchema.safeParse(value);
       const expected = config.commands[observations.length];
       if (!parsed.success || !expected || parsed.data.commandId !== expected.id) { protocolValid = false; return; }
-      observations.push(parsed.data);
+      observations.push({ ...parsed.data, stdout: parsed.data.stdout && expected.resultFormat === 'ndjson'
+        ? hideSecretsInNdjson(parsed.data.stdout, config.resourceSecrets ?? []) : '' });
     });
     childProcess.once('error', () => { protocolValid = false; });
     childProcess.once('exit', (code) => { exited = code; });
@@ -184,7 +217,37 @@ export function createProjectExecutor(options: Options): RunExecutor {
     catch { return candidate; }
     const config: WorkerConfig = { runId: initial.runId, sourceRoot: snapshot.realPath,
       evidenceRoot, ownerToken, commands: fixed.commands };
-    const observed = await runWorker(config, signal);
+    const needsResource = fixed.commands.some((command) => command.resources?.includes('postgres-test'));
+    if (needsResource && !options.resources) return { ...candidate, state: 'blocked' };
+    let prepared = !needsResource;
+    let resourceCleaned = !needsResource;
+    let observed: ObservedWorker | undefined;
+    let workerAttempted = false;
+    let resourcesAfterCleanup: ResourceRecord[] = [];
+    try {
+      if (needsResource) {
+        const resource = await options.resources!.prepare(initial.runId, ownerToken, signal);
+        config.resourceEnvironment = resource.environment;
+        config.resourceSecrets = resource.secrets;
+        prepared = true;
+      }
+      if (!signal.aborted) { workerAttempted = true; observed = await runWorker(config, signal); }
+    } catch {
+      // 준비 중 일부 자원이 생성됐을 수 있으므로 finally에서 정리한다.
+    } finally {
+      if (needsResource) {
+        try {
+          const cleanup = await options.resources!.cleanup(initial.runId);
+          resourceCleaned = cleanup.verified;
+          resourcesAfterCleanup = cleanup.resources;
+        } catch { resourceCleaned = false; }
+      }
+    }
+    if (!observed) return { ...candidate, state: workerAttempted || !resourceCleaned ? 'unverifiable' : 'blocked',
+      cleanupVerified: !workerAttempted && resourceCleaned, environmentVerified: false };
+    const secrets = config.resourceSecrets ?? [];
+    if (needsResource && resourcesAfterCleanup.some((item) => item.runId !== initial.runId || item.kind !== 'postgres-test'))
+      resourceCleaned = false;
     candidate.workerExitCode = observed.exitCode;
     candidate.state = observed.exitCode === null ? 'unverifiable' : 'finished';
     let protocolValid = observed.protocolValid;
@@ -197,6 +260,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
       const message = observed.observations[index];
       if (!message || message.commandId !== command.id) break;
       try {
+        if (await evidenceHasSecret(evidenceRoot, message.evidence, secrets)) throw new Error('증거에 비밀이 있습니다.');
         await options.evidenceStore.register(initial.runId, message.evidence);
         const inspected = await options.evidenceStore.inspect(initial.runId, message.evidence.id);
         if (inspected.integrity !== 'verified') evidenceValid = false;
@@ -207,7 +271,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
           async function* bytes() { yield Buffer.from(message!.stdout, 'utf8'); }
           for await (const event of readAdapterEvents(bytes(), initial.runId)) {
             if (event.type === 'case-result') {
-              const parsedCase = resultInputSchema.shape.cases.element.safeParse(scrub(event.payload));
+              const parsedCase = resultInputSchema.shape.cases.element.safeParse(scrub(event.payload, secrets));
               const check = fixed.checks.get(parsedCase.success ? parsedCase.data.testId : '');
               if (!parsedCase.success || !check || !command.checkIds.includes(check.id)
                 || parsedCase.data.requirementId !== check.requirementId || cases.has(check.id))
@@ -217,16 +281,20 @@ export function createProjectExecutor(options: Options): RunExecutor {
             } else if (event.type === 'evidence-created') {
               const parsedEvidence = evidenceSchema.safeParse(event.payload);
               if (!parsedEvidence.success || registered.has(parsedEvidence.data.id)) throw new Error('증거 형식 또는 ID가 잘못되었습니다.');
+              if (await evidenceHasSecret(evidenceRoot, parsedEvidence.data, secrets)) {
+                evidenceValid = false;
+                continue;
+              }
               await options.evidenceStore.register(initial.runId, parsedEvidence.data);
               const inspected = await options.evidenceStore.inspect(initial.runId, parsedEvidence.data.id);
               if (inspected.integrity !== 'verified') evidenceValid = false;
               registered.add(parsedEvidence.data.id);
             } else if (event.type.startsWith('resource-')) resourceSeen = true;
             const safeEvent: AdapterEvent = { ...event, sequence: ++sequence,
-              payload: scrub(event.payload) as Record<string, unknown> };
+              payload: scrub(hideSecretsInValue(event.payload, secrets), secrets) as Record<string, unknown> };
             options.eventStore.append(safeEvent);
           }
-        } catch { protocolValid = false; }
+        } catch { protocolValid = false; evidenceValid = false; }
       }
       for (const id of command.checkIds) {
         const check = fixed.checks.get(id)!;
@@ -257,9 +325,9 @@ export function createProjectExecutor(options: Options): RunExecutor {
       }
     }
     candidate.cases = initial.plannedChecks.flatMap((id) => cases.has(id) ? [cases.get(id)!] : []);
-    candidate.environmentVerified = process.versions.node.startsWith('24.') && protocolValid && !resourceSeen;
+    candidate.environmentVerified = process.versions.node.startsWith('24.') && protocolValid && !resourceSeen && prepared;
     candidate.evidenceVerified = evidenceValid && protocolValid && observed.observations.length > 0;
-    candidate.cleanupVerified = !resourceSeen && observed.observations.length === fixed.commands.length
+    candidate.cleanupVerified = resourceCleaned && !resourceSeen && observed.observations.length === fixed.commands.length
       && observed.observations.every((item) => item.outcome.terminationConfirmed && item.outcome.cleanupVerified);
     try { candidate.sourceAfter = await fingerprintSource(snapshot.realPath); }
     catch { candidate.sourceAfter = null; }

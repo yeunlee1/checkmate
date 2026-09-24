@@ -19,8 +19,10 @@ import { requirementEvidence } from './요구사항근거.js';
 import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
 import type { DataPaths } from '../연결/개인경로.js';
 import { getImportedHistory, importHistory, ImportHistoryError } from '../저장/가져온이력.js';
+import { ResourceStore } from '../저장/자원저장.js';
+import type { PostgresResources } from '../자원/격리데이터베이스.js';
 
-const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup']);
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources']);
 
 export class ProductService {
   readonly projects: ProjectStore;
@@ -30,11 +32,15 @@ export class ProductService {
   private storageFailure = false;
   private maintenance = false;
   private writing = 0;
+  private readonly cleaning = new Set<string>();
+  readonly resources: ResourceStore;
 
-  constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths) {
+  constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths,
+    private readonly resourceController?: Pick<PostgresResources, 'cleanup'>) {
     this.projects = new ProjectStore(db);
     this.runs = new SQLiteRunStore(db);
     this.execution = new RunService(this.runs, executor);
+    this.resources = new ResourceStore(db);
   }
   get active(): boolean { return this.pending.size > 0 || this.maintenance || this.writing > 0; }
 
@@ -61,7 +67,7 @@ export class ProductService {
       case 'capabilities':
         apiInputs.capabilities.parse(raw);
         return { version: '0.1.0-alpha.1', apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
-          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore'],
+          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'resource-recovery'],
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
       case 'projects': {
@@ -101,6 +107,10 @@ export class ProductService {
         if (!this.projects.hasApproval(input.planId)) throw new ServiceError('needs-approval', '이 계획의 명령과 쓰기 범위에 대한 확인이 필요합니다.', false, '사람용 계획 화면 또는 CLI approve에서 정확한 지문을 확인해 주세요.');
         const current = await readProjectSource(plan.workspace.realPath);
         if (current.sourceHash !== plan.plan.sourceHash || current.contentHash !== plan.catalog.contentHash) throw new ServiceError('plan-stale');
+        if (this.cleaning.has(plan.workspace.id)) throw new ServiceError('workspace-busy', '이전 실행의 자원을 정리하고 있습니다.');
+        if (this.db.prepare(`SELECT 1 FROM resources owned JOIN runs r ON r.id=owned.run_id
+          WHERE r.workspace_id=? AND owned.state!='cleaned' LIMIT 1`).get(plan.workspace.id))
+          throw new ServiceError('ownership-unknown', '이전 실행의 시험 DB 정리가 확인되지 않았습니다.');
         const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state IN ('unverifiable','cancelled')
           AND json_extract(r.summary_json,'$.cleanupVerified') IS NOT 1
           AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=r.id AND a.action='cleanup-acknowledged' AND a.actor_kind='human') LIMIT 1`).get(plan.workspace.id);
@@ -172,11 +182,13 @@ export class ProductService {
             { workspace_id: string; summary_json: string } | undefined;
           if (!row) throw new ServiceError('run-not-found');
           const run = this.requireRun(input.runId);
-          if (run.origin !== 'live' || !run.finalized || !['unverifiable', 'cancelled'].includes(run.state)
+          if (run.origin !== 'live' || !run.finalized || !['blocked', 'unverifiable', 'cancelled'].includes(run.state)
             || run.cleanupVerified === true) throw new ServiceError('invalid-state', '수동 정리 확인 대상 실행이 아닙니다.');
           const busy = this.db.prepare("SELECT 1 FROM runs WHERE workspace_id=? AND state IN ('queued','running') LIMIT 1")
             .get(row.workspace_id);
           if (busy) throw new ServiceError('workspace-busy', '같은 작업 폴더의 실행이 끝난 뒤 확인해 주세요.');
+          if (this.cleaning.has(row.workspace_id) || this.resources.list(run.runId).some(resource => resource.state !== 'cleaned'))
+            throw new ServiceError('ownership-unknown', '기록된 시험 DB의 정리를 먼저 확인해 주세요.');
           const prior = this.db.prepare("SELECT id FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged' AND actor_kind='human' LIMIT 1")
             .get(run.runId);
           if (prior) return { runId: run.runId, acknowledged: true, reused: true, originalVerdict: run.verdict };
@@ -187,6 +199,31 @@ export class ProductService {
               new Date().toISOString(), JSON.stringify({ note: input.note, manualConfirmation: true }));
           return { runId: run.runId, acknowledged: true, reused: false, originalVerdict: run.verdict };
         })();
+      }
+      case 'resources': {
+        const input = apiInputs.resources.parse(raw);
+        this.requireRun(input.runId);
+        return boundedPage(this.resources.list(input.runId), `resources:${input.runId}`, input.cursor, input.limit);
+      }
+      case 'cleanup-resources': {
+        const input = apiInputs['cleanup-resources'].parse(raw);
+        const run = this.requireRun(input.runId);
+        if (run.origin !== 'live' || !run.finalized || !['blocked', 'unverifiable', 'cancelled'].includes(run.state)
+          || run.cleanupVerified === true) throw new ServiceError('invalid-state', '중단된 실행의 자원만 수동 정리할 수 있습니다.');
+        const row = this.db.prepare('SELECT workspace_id FROM runs WHERE id=?').get(run.runId) as { workspace_id: string };
+        if (this.cleaning.has(row.workspace_id) || this.db.prepare("SELECT 1 FROM runs WHERE workspace_id=? AND state IN ('queued','running') LIMIT 1").get(row.workspace_id))
+          throw new ServiceError('workspace-busy', '같은 작업 폴더의 작업이 끝난 뒤 정리해 주세요.');
+        if (!this.resourceController) throw new ServiceError('unsupported-operation', '자원 정리 기능이 연결되지 않았습니다.');
+        this.cleaning.add(row.workspace_id);
+        try {
+          const result = await this.resourceController.cleanup(run.runId);
+          this.db.prepare(`INSERT INTO audit_events
+            (id,action,actor_kind,entity_id,before_hash,after_hash,approval_id,recorded_at,detail_json)
+            VALUES (?,'resources-cleanup','human',?,NULL,NULL,NULL,?,?)`)
+            .run(randomUUID(), run.runId, new Date().toISOString(), JSON.stringify({ verified: result.verified, resourceIds: result.resources.map(resource => resource.id) }));
+          return { runId: run.runId, verified: result.verified, originalVerdict: run.verdict,
+            resources: result.resources, nextAction: '명령 프로세스의 종료도 확인한 뒤 수동 정리 확인을 남겨 주세요. 과거 판정은 유지됩니다.' };
+        } finally { this.cleaning.delete(row.workspace_id); }
       }
       case 'history': {
         const input = apiInputs.history.parse(raw);

@@ -21,7 +21,7 @@ export type CatalogChange = { projectId: string; contentHash: string; active: bo
   added: string[]; removed: string[]; changed: string[]; weakened: string[] };
 export type PlanReview = { planId: string; projectId: string; profile: string; fingerprint: string; sourceHash: string;
   checks: { id: string; title: string; required: boolean }[]; commands: ProjectDefinition['commands'];
-  writes: string[]; needsApproval: boolean };
+  writes: string[]; resourceEffects: string[]; needsApproval: boolean };
 
 export class ProjectStoreError extends Error {
   constructor(public readonly code: string) { super('프로젝트 저장 작업을 처리할 수 없습니다.'); }
@@ -259,7 +259,8 @@ export class ProjectStore {
         const registration: PlanRegistration = {
           project: { id: projectId, name: project.name, repositoryIdentity: project.repository_identity },
           workspace: { id: workspace.id, realPath: workspace.real_path, pathFingerprint: workspace.path_fingerprint },
-          catalog: { id: catalog.row.id, contentHash: catalog.row.content_hash, source: catalog.source },
+          catalog: { id: catalog.row.id, contentHash: catalog.row.content_hash,
+            source: z.record(z.string(), z.json()).parse(JSON.parse(JSON.stringify(catalog.source))) },
           plan: { id: planId, fingerprint, sourceHash: value.sourceHash, profile: profileId,
             plannedChecks: selected.checks.map((item) => item.id),
             requiredChecks: selected.checks.filter((item) => item.required).map((item) => item.id) },
@@ -275,7 +276,10 @@ export class ProjectStore {
         } else this.runs.registerPlan(registration);
         return { planId, projectId, profile: profileId, fingerprint, sourceHash: value.sourceHash,
           checks: selected.checks.map(({ id, title, required }) => ({ id, title, required })),
-          commands: selected.commands, writes: selected.writes };
+          commands: selected.commands, writes: selected.writes,
+          resourceEffects: selected.commands.some(command => command.resources?.includes('postgres-test'))
+            ? ['새 일회용 PostgreSQL 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.',
+              '컨테이너 안의 합성 DB 전체에 마이그레이션·쓰기·삭제를 허용하며, 실행 종료 시 컨테이너와 자료를 제거합니다. 기존 DB와 볼륨은 연결하지 않습니다.'] : [] };
       })();
       return { ...plan, needsApproval: !this.hasApproval(plan.planId) };
     } catch (error) { fail(error); }

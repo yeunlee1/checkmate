@@ -98,7 +98,7 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
     project: { id: projectId, name: '합성 프로젝트', repositoryIdentity: 'synthetic:executor' },
     workspace: { id: randomUUID(), realPath: snapshot.realPath,
       pathFingerprint: createHash('sha256').update(snapshot.realPath).digest('hex') },
-    catalog: { id: randomUUID(), contentHash: snapshot.contentHash, source: snapshot.source },
+    catalog: { id: randomUUID(), contentHash: snapshot.contentHash, source: JSON.parse(JSON.stringify(snapshot.source)) },
     plan: { id: randomUUID(), fingerprint: createHash('sha256').update(mode).digest('hex'),
       sourceHash: snapshot.sourceHash, profile: 'quick',
       plannedChecks: second ? ['check-1', 'check-2'] : ['check-1'],
