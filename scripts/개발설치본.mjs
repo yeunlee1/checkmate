@@ -1,7 +1,7 @@
 // 검증된 Node와 엔진을 동봉한 서명 없는 Windows 개발 설치본을 새 폴더에 만든다.
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { copyFile, cp, lstat, mkdir, readFile, readdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import { get } from 'node:https';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -19,6 +19,7 @@ const licenseUrl = `https://raw.githubusercontent.com/nodejs/node/v${version}/LI
 const nativeSource = join(root, 'node_modules', 'better-sqlite3', 'prebuilds', 'win32-x64.node');
 const scriptPath = fileURLToPath(import.meta.url);
 const forgePath = join(root, 'forge.config.cjs');
+const zipLauncherSource = join(root, 'scripts', '압축실행기.cs');
 
 function command(executable, args, cwd = root, options = {}) {
   const result = spawnSync(executable, args, { cwd, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024, ...options });
@@ -117,7 +118,7 @@ async function main() {
     report.source.codeFingerprint = { sha256: (await fingerprint(sourceFiles)).sha256, fileCount: sourceFiles.length };
     const rendererAssets = join(root, 'packages', 'desktop', 'dist', 'renderer', 'assets');
     for (const name of await readdir(rendererAssets)) required.push(join(rendererAssets, name));
-    report.source.inputs = await fingerprint([...required, nativeSource, scriptPath, forgePath]);
+    report.source.inputs = await fingerprint([...required, nativeSource, scriptPath, forgePath, zipLauncherSource]);
 
     const resourceRoot = join(runRoot, 'resources');
     const nodeDir = join(resourceRoot, 'node');
@@ -183,8 +184,16 @@ async function main() {
     await cp(join(root, 'packages', 'desktop', 'dist', 'renderer'), join(appRoot, 'dist', 'renderer'), { recursive: true });
     const squirrelVendor = join(runRoot, 'squirrel-vendor');
     await cp(join(root, 'node_modules', 'electron-winstaller', 'vendor'), squirrelVendor, { recursive: true });
-    await copyRequired(join(squirrelVendor, '7z-x64.exe'), join(squirrelVendor, '7z.exe'));
     await copyRequired(join(squirrelVendor, '7z-x64.dll'), join(squirrelVendor, '7z.dll'));
+    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    const compilers = windowsRoot ? [
+      join(windowsRoot, 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
+      join(windowsRoot, 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
+    ] : [];
+    const compiler = compilers.find(existsSync);
+    if (!compiler) throw new Error('설치된 .NET Framework C# 컴파일러를 찾지 못했습니다.');
+    command(compiler, ['/nologo', '/target:exe', `/out:${join(squirrelVendor, '7z.exe')}`, zipLauncherSource]);
+    report.squirrelZip = { launcherSha256: await sha256(join(squirrelVendor, '7z.exe')), nativeSha256: await sha256(join(squirrelVendor, '7z-x64.exe')), unicodePathExtra: '0x7075' };
     report.source.stagedAt = new Date().toISOString();
     process.env.CHECKMATE_BUILD_RESOURCE_ROOT = resourceRoot;
     await symlink(runRoot, asciiAlias, 'junction');
