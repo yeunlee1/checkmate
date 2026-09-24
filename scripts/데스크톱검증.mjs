@@ -62,7 +62,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await page.getByLabel('검사 프로필', { exact: true }).selectOption('quick');
   await page.getByRole('button', { name: '계획 확인', exact: true }).click();
   await expect(page.getByRole('button', { name: '검사 실행', exact: true })).toBeDisabled();
-  await page.getByLabel('위 명령, 환경 값, 쓰기 범위를 확인했습니다.', { exact: true }).check();
+  await page.getByLabel('위 명령, 환경 값, 쓰기 범위와 시험 자원을 확인했습니다.', { exact: true }).check();
   await page.getByRole('button', { name: '이 계획 승인', exact: true }).click();
   await page.getByRole('button', { name: '검사 실행', exact: true }).click();
   await expect(page.locator('.run-panel .panel-heading').getByText('통과', { exact: true })).toBeVisible({ timeout: 20000 });
@@ -153,7 +153,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await page.getByRole('button', { name: '+ 프로젝트 추가', exact: true }).click();
   await page.getByLabel('검사 프로필', { exact: true }).selectOption('defect');
   await page.getByRole('button', { name: '계획 확인', exact: true }).click();
-  await page.getByLabel('위 명령, 환경 값, 쓰기 범위를 확인했습니다.', { exact: true }).check();
+  await page.getByLabel('위 명령, 환경 값, 쓰기 범위와 시험 자원을 확인했습니다.', { exact: true }).check();
   await page.getByRole('button', { name: '이 계획 승인', exact: true }).click();
   await page.getByRole('button', { name: '검사 실행', exact: true }).click();
   await expect(page.locator('.run-panel .panel-heading').getByText('실패', { exact: true })).toBeVisible({ timeout: 30000 });

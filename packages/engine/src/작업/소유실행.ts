@@ -84,12 +84,18 @@ async function runWindows(command: RegisteredCommand, options: RunOptions,
   const helper = await helperPath();
   const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
   if (!systemRoot) throw new OwnedProcessError('invalid-input', 'Windows 시스템 경로를 확인할 수 없습니다.');
+  const childEnv = { SystemRoot: systemRoot, ...command.env };
+  const block = Buffer.from(Object.entries(childEnv).map(([key, value]) => `${key}=${value}\0`).join('') + '\0', 'utf16le');
+  if (block.length > 1024 * 1024) {
+    throw new OwnedProcessError('invalid-input', 'Windows 환경 블록이 지원 크기를 초과합니다.');
+  }
+  const frame = Buffer.allocUnsafe(4 + block.length);
+  frame.writeUInt32LE(block.length, 0);
+  block.copy(frame, 4);
   const folder = await mkdtemp(join(tmpdir(), 'checkmate-owned-'));
   const statusPath = join(folder, 'status.txt');
-  const childEnv = { SystemRoot: systemRoot, ...command.env };
-  const env = Object.entries(childEnv).flatMap(([key, value]) => [key, value]);
   const args = [statusPath, command.executable, command.cwd, String(terminationWaitMs),
-    String(Object.keys(childEnv).length), ...env, String(command.args.length), ...command.args];
+    'stdin-env-v1', String(command.args.length), ...command.args];
   try {
     if (options.signal?.aborted) return empty('cancelled', true);
     return await new Promise<OwnedProcessOutcome>((resolveResult) => {
@@ -128,6 +134,7 @@ async function runWindows(command: RegisteredCommand, options: RunOptions,
       options.signal?.addEventListener('abort', cancel, { once: true });
       if (options.signal?.aborted) cancel();
       child.stdin.on('error', () => {});
+      if (!reason) child.stdin.write(frame);
       child.stdout.on('data', output.addStdout);
       child.stderr.on('data', output.addStderr);
       child.once('error', () => finish({ ...empty(child.pid === undefined ? 'spawn-error' : 'unverifiable',

@@ -3,16 +3,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runOwnedCommand } from './소유실행.js';
+import { hideSecretsInNdjson } from './비밀가림.js';
 import type { EvidenceInput } from '../저장/증거저장.js';
 import type { ProcessOutcome, RegisteredCommand } from '../작업실행.js';
 
 export type FixedCommand = {
   id: string; entry: string; args: string[]; timeoutMs: number; env: Record<string, string>;
   resultFormat: 'exit-code' | 'ndjson'; checkIds: string[];
+  resources?: 'postgres-test'[];
 };
 export type WorkerConfig = {
   runId: string; sourceRoot: string; evidenceRoot: string; ownerToken: string;
   commands: FixedCommand[];
+  resourceEnvironment?: Record<string, string>; resourceSecrets?: string[];
 };
 export type CommandObservation = {
   kind: 'result'; commandId: string; outcome: ProcessOutcome & { cleanupVerified: boolean };
@@ -35,6 +38,7 @@ async function run(config: WorkerConfig): Promise<void> {
     const environment: Record<string, string> = { ...item.env,
       CHECKMATE_RUN_ID: config.runId, CHECKMATE_EVIDENCE_DIR: config.evidenceRoot,
       CHECKMATE_OWNER_TOKEN: config.ownerToken };
+    if (item.resources?.includes('postgres-test')) Object.assign(environment, config.resourceEnvironment);
     for (const key of ['SystemRoot', 'WINDIR'] as const) {
       if (process.env[key]) environment[key] = process.env[key]!;
     }
@@ -54,7 +58,8 @@ async function run(config: WorkerConfig): Promise<void> {
     const evidence: EvidenceInput = { id: randomUUID(), relativePath,
       sha256: createHash('sha256').update(record).digest('hex'), byteLength: record.length,
       mime: 'application/json', sensitivity: 'restricted' };
-    await send({ kind: 'result', commandId: item.id, outcome, stdout, evidence });
+    await send({ kind: 'result', commandId: item.id, outcome,
+      stdout: item.resultFormat === 'ndjson' ? hideSecretsInNdjson(stdout, config.resourceSecrets ?? []) : '', evidence });
     if (outcome.status !== 'exited' || !outcome.cleanupVerified) break;
   }
 }

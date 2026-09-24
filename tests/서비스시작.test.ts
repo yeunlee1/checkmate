@@ -140,6 +140,19 @@ it('재시작 때 미착수 실행은 정리 완료로 막고 진행 실행은 �
 });
 
 it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 뒤 다시 시작한다', async () => {
+  // 소유 표식 제거와 OS 프로세스 종료 사이에도 작업 폴더가 잠길 수 있어 실제 종료를 기다린다.
+  const waitForServiceExit = async (pid: number) => {
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      try { process.kill(pid, 0); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error('합성 서비스의 실제 프로세스 종료를 확인하지 못했습니다.');
+  };
   const paths = await fixture();
   await prepareDataPaths(paths);
   const clientUrl = pathToFileURL(resolve('packages/engine/dist/서비스/클라이언트.js')).href;
@@ -207,6 +220,7 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   await expect(readFile(lock)).rejects.toMatchObject({ code: 'ENOENT' });
+  await waitForServiceExit(firstPid);
   const restarted = await runClient();
   expect(restarted.pid).not.toBe(firstPid);
   expect(restarted.file).toBe(rows[0]!.file);
@@ -217,4 +231,5 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   await expect(readFile(lock)).rejects.toMatchObject({ code: 'ENOENT' });
+  await waitForServiceExit(restarted.pid);
 }, 120000);

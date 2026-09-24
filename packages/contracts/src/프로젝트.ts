@@ -26,13 +26,15 @@ const commandSchema = z.strictObject({
     if (Object.keys(values).length > 100) context.addIssue({ code: 'custom', message: '환경 변수 수가 많습니다.' });
     for (const key of Object.keys(values)) {
       if ((key !== 'NODE_ENV' && !/^CHECKMATE_[A-Z0-9_]+$/u.test(key))
-        || /(?:SECRET|TOKEN|PASSWORD|PRIVATE|CREDENTIAL|API_KEY|ACCESS_KEY|AUTH|COOKIE)/iu.test(key)) {
+        || /(?:SECRET|TOKEN|PASSWORD|PRIVATE|CREDENTIAL|API_KEY|ACCESS_KEY|AUTH|COOKIE)/iu.test(key)
+        || ['CHECKMATE_PG_ADMIN_URL', 'CHECKMATE_PG_MANAGED', 'CHECKMATE_RUN_ID', 'CHECKMATE_EVIDENCE_DIR'].includes(key)) {
         context.addIssue({ code: 'custom', path: [key], message: '허용되지 않은 환경 변수 이름입니다.' });
       }
     }
   }),
   writes: z.array(relativePath).max(100),
   resultFormat: z.enum(['ndjson', 'exit-code']),
+  resources: z.array(z.literal('postgres-test')).max(1).optional(),
 });
 
 const profileSchema = z.strictObject({

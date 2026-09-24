@@ -19,11 +19,18 @@ test('수동 확인은 원래 판정을 보존하고 해당 실행의 작업 폴
   cleanup.push(async () => { db.close(); await files.cleanup(); });
   const runsRoot = join(files.directory, 'runs');
   await mkdir(runsRoot);
-  let mode: 'fail' | 'hold' | 'pass' = 'fail';
+  let mode: 'fail' | 'hold' | 'pass' | 'blocked-resource' = 'fail';
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const product = new ProductService(db, new EvidenceStore(db, runsRoot), async (_plan, initial) => {
     if (mode === 'fail') throw new Error('합성 실행 생존 확인 실패');
+    if (mode === 'blocked-resource') {
+      const id = randomUUID();
+      product.resources.intent({ id, runId: initial.runId, kind: 'postgres-test', ownerTokenHash: 'a'.repeat(64), state: 'intent', cleanup: null,
+        descriptor: { name: `cm-pg-${initial.runId}-${id}`, image: `postgres:17-alpine@sha256:${'b'.repeat(64)}`,
+          endpoint: 'unix:///var/run/docker.sock', daemonId: 'synthetic-daemon' } });
+      return { ...initial, state: 'blocked', cleanupVerified: false };
+    }
     if (mode === 'hold') await gate;
     return { ...initial, state: 'finished', sourceAfter: initial.sourceBefore, workerExitCode: 0,
       environmentVerified: true, evidenceVerified: true, cleanupVerified: true,
@@ -90,4 +97,9 @@ test('수동 확인은 원래 판정을 보존하고 해당 실행의 작업 폴
   release();
   expect(await product.execution.wait(nextRunId)).toMatchObject({ state: 'finished', verdict: 'passed' });
   expect(product.runs.getRun(firstRunId)).toEqual(original);
+  mode = 'blocked-resource';
+  const blockedRunId = await start(firstProject);
+  expect(await product.execution.wait(blockedRunId)).toMatchObject({ state: 'blocked', verdict: 'incomplete', cleanupVerified: false });
+  expect(await call('start', firstProject)).toMatchObject({ ok: false, error: { code: 'ownership-unknown' } });
+  expect(await call('acknowledge-cleanup', { ...input, runId: blockedRunId })).toMatchObject({ ok: false, error: { code: 'ownership-unknown' } });
 });

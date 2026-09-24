@@ -23,7 +23,9 @@ it('사람 승인과 임의 명령 도구를 노출하지 않고 실제 SDK로 �
   const calls: ApiRequest[] = [];
   const client = await connect(async (request) => { calls.push(request); return { apiVersion: 1, requestId: request.requestId, ok: true, data: { ready: true } }; });
   const names = (await client.listTools()).tools.map((tool) => tool.name);
-  expect(names).toHaveLength(12);
+  expect(names).toHaveLength(13);
+  expect(names).toContain('list_run_resources');
+  expect(names).not.toContain('cleanup-resources');
   expect(names).toContain('inspect_project');
   expect(names).not.toContain('approve');
   expect(names).not.toContain('register');

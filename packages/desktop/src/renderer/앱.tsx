@@ -4,6 +4,7 @@ import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 import { VisualEvidence, parseDesignEvidence } from './증거시각화.js';
 import type { DesignEvidence, VisualEvidenceProps } from './증거시각화.js';
 import { Help } from './도움말.js';
+import { TestResources } from './시험자원.js';
 
 type Bridge = {
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
@@ -22,9 +23,9 @@ type ProjectInfo = { id: string; name: string; repositoryIdentity: string; works
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
 type CheckInfo = { id: string; title: string; requirementId: string; required: boolean; kind: string; expected: string; codePaths: string[] };
 type Command = { id: string; title: string; runtime: string; entry: string; args: string[]; timeoutMs: number;
-  env: Record<string, string>; writes: string[]; resultFormat: string };
+  env: Record<string, string>; writes: string[]; resultFormat: string; resources?: string[] };
 type PlanReview = { planId: string; projectId: string; profile: string; fingerprint: string; sourceHash: string;
-  checks: { id: string; title: string; required: boolean }[]; commands: Command[]; writes: string[]; needsApproval: boolean };
+  checks: { id: string; title: string; required: boolean }[]; commands: Command[]; writes: string[]; resourceEffects: string[]; needsApproval: boolean };
 type CatalogChange = { projectId: string; contentHash: string; active: boolean; added: string[]; removed: string[];
   changed: string[]; weakened: string[] };
 type CaseInfo = { testId: string; status: string; requirementId: string | null; expected: string | null;
@@ -560,8 +561,9 @@ export function App() {
                   <p><code>{command.runtime} {command.entry} {command.args.join(' ')}</code></p><p className="muted">시간 제한 {Math.round(command.timeoutMs / 1000)}초 · 결과 형식 {command.resultFormat}</p>
                   <div className="env-list">{Object.entries(command.env).length === 0 ? '추가 환경 값 없음' : Object.entries(command.env).map(([key, value]) => <code key={key}>{key}={value}</code>)}</div></div>)}</div>
                 <div className="subsection"><h4>허용된 쓰기 경로</h4>{plan.writes.length === 0 ? <p className="muted">선언된 쓰기 경로가 없습니다.</p> : <ul className="compact-list">{plan.writes.map((path) => <li key={path}><code>{path}</code></li>)}</ul>}</div>
+                {plan.resourceEffects?.length > 0 && <div className="subsection"><h4>시험 DB 생성과 제거</h4>{plan.resourceEffects.map(effect => <p key={effect}>{effect}</p>)}</div>}
                 <p className="muted">계획 지문 <CopyValue value={plan.fingerprint} label="계획 지문" /></p>
-                <label className="checkline"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />위 명령, 환경 값, 쓰기 범위를 확인했습니다.</label>
+                <label className="checkline"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} />위 명령, 환경 값, 쓰기 범위와 시험 자원을 확인했습니다.</label>
                 <div className="plan-actions">{plan.needsApproval && <button type="button" className="secondary" onClick={() => void approve()} disabled={!consent || !!busy}>이 계획 승인</button>}
                   <button type="button" className="primary" onClick={() => void start()} disabled={!consent || plan.needsApproval || !!busy}>검사 실행</button></div>
               </div>}</section>}
@@ -595,7 +597,9 @@ export function App() {
                 if (saved.path) setNotice(`보고서를 저장했습니다. ${saved.path}`);
               })}>HTML 보고서 저장</button> : <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? '취소 요청됨 · 종료 확인 중' : '실행 취소 요청'}</button>}</div>
               {summary.origin === 'imported' && <p className="instruction">가져온 과거 이력입니다. 현재 실행과 요구사항의 통과 근거로 사용하지 않습니다.</p>}
-              {summary.origin === 'live' && summary.finalized && ['unverifiable', 'cancelled'].includes(summary.state) && summary.cleanupVerified !== true && <div className="plan-review">
+              {summary.origin === 'live' && summary.finalized && <TestResources key={runId} runId={runId} request={request} disabled={!!busy}
+                canCleanup={['blocked', 'unverifiable', 'cancelled'].includes(summary.state) && summary.cleanupVerified !== true} />}
+              {summary.origin === 'live' && summary.finalized && ['blocked', 'unverifiable', 'cancelled'].includes(summary.state) && summary.cleanupVerified !== true && <div className="plan-review">
                 <h3>실행 자원 정리 확인</h3><p>이 실행의 종료와 정리를 자동 확인하지 못해 같은 프로젝트의 새 검사를 보류합니다. 해당 실행이 만든 프로세스와 임시 자료를 직접 확인한 뒤 기록해 주세요. 과거 실행의 미확인 판정은 유지됩니다.</p>
                 {cleanupAcknowledged === runId ? <p role="status">사람의 정리 확인을 기록했습니다. 새 계획으로 검사할 수 있습니다.</p> : <>
                   <label className="field">확인한 정리 내용<textarea value={cleanupNote} minLength={8} maxLength={500} onChange={event => setCleanupNote(event.target.value)} disabled={!!busy} /></label>

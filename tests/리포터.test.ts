@@ -105,7 +105,7 @@ describe('대표 예제와 부모 검사실행기', () => {
             repositoryIdentity: snapshot.source.project.repositoryIdentity },
           workspace: { id: workspaceId, realPath: snapshot.realPath,
             pathFingerprint: createHash('sha256').update(snapshot.realPath).digest('hex') },
-          catalog: { id: catalogId, contentHash: snapshot.contentHash, source: snapshot.source },
+          catalog: { id: catalogId, contentHash: snapshot.contentHash, source: JSON.parse(JSON.stringify(snapshot.source)) },
           plan: { id: randomUUID(), fingerprint: createHash('sha256').update(profile.id).digest('hex'),
             sourceHash: snapshot.sourceHash, profile: profile.id, plannedChecks,
             requiredChecks: plannedChecks }, createdAt: new Date().toISOString(),

@@ -52,6 +52,27 @@ afterEach(async () => {
 });
 
 describe('프로젝트 원본', () => {
+  it('기존 명령은 자원 필드를 추가하지 않고 선언 변화와 예약 환경을 검증한다.', async () => {
+    const before = await readProjectSource(root);
+    expect(Object.hasOwn(before.source.project.commands[0]!, 'resources')).toBe(false);
+    const command = (project.commands as Record<string, unknown>[])[0]!;
+    command.resources = ['postgres-test'];
+    await save();
+    const after = await readProjectSource(root);
+    expect(after.contentHash).not.toBe(before.contentHash);
+    expect(after.sourceHash).not.toBe(before.sourceHash);
+    expect(after.source.project.commands[0]!.resources).toEqual(['postgres-test']);
+    for (const resources of [['postgres-test', 'postgres-test'], ['existing-database']]) {
+      command.resources = resources; await save();
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
+    }
+    command.resources = ['postgres-test'];
+    for (const key of ['CHECKMATE_PG_ADMIN_URL', 'CHECKMATE_PG_MANAGED', 'CHECKMATE_RUN_ID', 'CHECKMATE_EVIDENCE_DIR']) {
+      command.env = { [key]: 'invalid' }; await save();
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
+    }
+  });
+
   it('세 원본을 읽고 안정된 해시와 실제 경로를 반환한다.', async () => {
     const first = await readProjectSource(root);
     const second = await readProjectSource(root);

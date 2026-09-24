@@ -52,7 +52,7 @@ test('실패는 공백이 아니고 같은 공백은 누적하지 않으며 관�
   const base: PlanRegistration = {
     project: { id: projectId, name: '미검증 시험', repositoryIdentity: 'synthetic:gaps' },
     workspace: { id: randomUUID(), realPath: files.directory, pathFingerprint: 'a'.repeat(64) },
-    catalog: { id: randomUUID(), contentHash: catalogHash(source), source },
+    catalog: { id: randomUUID(), contentHash: catalogHash(source), source: JSON.parse(JSON.stringify(source)) },
     plan: { id: randomUUID(), fingerprint: 'c'.repeat(64), sourceHash: 'd'.repeat(64), profile: 'quick',
       plannedChecks: ['check-1'], requiredChecks: ['check-1'] },
     createdAt: new Date().toISOString(),
@@ -103,7 +103,7 @@ test('실패는 공백이 아니고 같은 공백은 누적하지 않으며 관�
     checks: [...source.checks, { id: 'check-2', title: '둘째 검사', requirementId: 'req-2', commandId: 'command-1',
       required: true, kind: 'logic', expected: '결과가 통과한다.', codePaths: ['test.mjs'] }],
   };
-  const partial: PlanRegistration = { ...base, catalog: { id: randomUUID(), contentHash: catalogHash(updatedSource), source: updatedSource },
+  const partial: PlanRegistration = { ...base, catalog: { id: randomUUID(), contentHash: catalogHash(updatedSource), source: JSON.parse(JSON.stringify(updatedSource)) },
     plan: { ...base.plan, id: randomUUID(), fingerprint: 'f'.repeat(64) } };
   product.runs.registerPlan(partial);
   db.prepare('UPDATE projects SET active_catalog_id=? WHERE id=?').run(partial.catalog.id, projectId);
