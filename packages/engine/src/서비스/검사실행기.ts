@@ -13,6 +13,7 @@ import type { RunExecutor } from './실행서비스.js';
 import { readProjectSource, fingerprintSource } from '../프로젝트/원본읽기.js';
 import { assertIncludedEntry, readCheckedFile } from '../프로젝트/소스지문.js';
 import { readAdapterEvents } from '../이벤트읽기.js';
+import { rejectLinks } from '../연결/개인경로.js';
 import type { EvidenceStore } from '../저장/증거저장.js';
 import type { EventStore } from '../저장/이벤트저장.js';
 import type { AdapterEvent } from '@checkmate/contracts/events';
@@ -50,10 +51,10 @@ function inside(root: string, path: string): boolean {
 async function checkedRoot(path: string): Promise<string> {
   if (!isAbsolute(path) || path.includes('\0')) throw new Error('실행 폴더 경로가 올바르지 않습니다.');
   const normalized = resolve(path);
+  await rejectLinks(normalized);
   const info = await lstat(normalized);
   const actual = await realpath(normalized);
-  if (!info.isDirectory() || info.isSymbolicLink() ||
-    (process.platform === 'win32' ? actual.toLowerCase() !== normalized.toLowerCase() : actual !== normalized))
+  if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error('실행 폴더의 실제 경로가 다릅니다.');
   return actual;
 }

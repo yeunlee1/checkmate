@@ -1,6 +1,7 @@
 // 합성 프로젝트의 실제 작업 프로세스 종료와 결과 및 증거 판정을 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, readFile, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -60,7 +61,8 @@ if (mode === 'ndjson-output-limit') { process.stdout.write('X'.repeat(300000)); 
 process.exit(mode === 'exit-fail' || mode === 'ndjson-fail' ? 9 : 0);
 `;
 
-async function scenario(mode: Scenario) {
+async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, directory: string) => Promise<{
+  path: string; cleanup?: () => Promise<void> }>) {
   const fixture = await createStoreFixture();
   const sourceRoot = join(fixture.directory, '합성프로젝트');
   const runsRoot = join(fixture.directory, '실행');
@@ -104,12 +106,16 @@ async function scenario(mode: Scenario) {
     createdAt: new Date().toISOString(),
   };
   const db = connectStore(fixture.dbPath);
+  let cleanupAlias: (() => Promise<void>) | undefined;
   try {
+    const alias = await runsRootAlias?.(runsRoot, fixture.directory);
+    cleanupAlias = alias?.cleanup;
     const store = new SQLiteRunStore(db);
     store.registerPlan(plan);
     const evidence = new EvidenceStore(db, runsRoot);
     const events = new EventStore(db);
-    const service = new RunService(store, createProjectExecutor({ runsRoot, evidenceStore: evidence, eventStore: events }));
+    const service = new RunService(store, createProjectExecutor({ runsRoot: alias?.path ?? runsRoot,
+      evidenceStore: evidence, eventStore: events }));
     if (mode === 'worker-crash') workerControl.killNext = true;
     const started = service.start({ projectId, planId: plan.plan.id, requestId: randomUUID() });
     const cancellation = mode === 'cancel' ? new Promise<void>((resolve, reject) => {
@@ -117,17 +123,63 @@ async function scenario(mode: Scenario) {
     }) : null;
     const result = await service.wait(started.runId);
     if (cancellation) await cancellation;
-    const command = ['ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
+    const command = result.state === 'finished'
+      && ['exit-pass', 'ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
       ? JSON.parse(await readFile(join(runsRoot, started.runId, '명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
       : null;
     return { result, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
   } finally {
     db.close();
+    await cleanupAlias?.();
     await fixture.cleanup();
   }
 }
 
 describe('고정 계획 검사실행기', () => {
+  it.runIf(process.platform === 'win32')('실제 8.3 자료 경로에서 명령 실행과 증거 및 정리를 확인한다.', async (context) => {
+    const { result, evidence, command } = await scenario('exit-pass', async (runsRoot) => {
+      const encoded = Buffer.from(runsRoot, 'utf8').toString('base64');
+      const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public static class ShortPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetShortPathName(string path, StringBuilder result, uint length); }'; $path=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); $result=New-Object Text.StringBuilder 32768; if ([ShortPath]::GetShortPathName($path,$result,[uint32]$result.Capacity) -eq 0) { throw 'short-path-failed' }; [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($result.ToString()))`;
+      const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const output = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+        Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
+      const shortRoot = Buffer.from(output.trim(), 'base64').toString('utf8');
+      if (!/(?:^|[\\/])[^\\/]*~\d+(?:[\\/]|$)/u.test(shortRoot)) {
+        context.skip('이 파일시스템은 시험 자료 경로의 8.3 별칭을 제공하지 않아 8.3 회귀는 미검증입니다.');
+      }
+      expect((await realpath(shortRoot)).toLowerCase()).toBe((await realpath(runsRoot)).toLowerCase());
+      console.info('실제 GetShortPathName 8.3 별칭으로 실행기 회귀를 검증합니다.');
+      return { path: shortRoot };
+    });
+    expect(result).toMatchObject({ state: 'finished', verdict: 'passed', workerExitCode: 0,
+      environmentVerified: true, evidenceVerified: true, cleanupVerified: true });
+    expect(result.cases).toMatchObject([{ testId: 'check-1', status: 'passed' }]);
+    expect(command).toMatchObject({ status: 'exited', exitCode: 0 });
+    expect(evidence).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === 'win32')('대소문자 별칭을 실제 경로로 정규화하여 실행한다.', async () => {
+    const { result, evidence } = await scenario('exit-pass', async (runsRoot) => {
+      const alias = runsRoot.toUpperCase();
+      expect(alias).not.toBe(runsRoot);
+      return { path: alias };
+    });
+    expect(result).toMatchObject({ state: 'finished', verdict: 'passed', workerExitCode: 0,
+      environmentVerified: true, evidenceVerified: true, cleanupVerified: true });
+    expect(evidence).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === 'win32')('실행 폴더의 상위 junction을 거절한다.', async () => {
+    const { result, evidence } = await scenario('exit-pass', async (_runsRoot, directory) => {
+      const link = join(directory, '상위연결');
+      await symlink(directory, link, 'junction');
+      return { path: join(link, '실행'), cleanup: () => unlink(link) };
+    });
+    expect(result).toMatchObject({ state: 'unverifiable', verdict: 'unknown', workerExitCode: null,
+      evidenceVerified: false, cleanupVerified: false });
+    expect(evidence).toHaveLength(0);
+  });
+
   it('실제 작업 종료와 명령 결과 증거를 확인한 경우에만 통과한다.', async () => {
     const { result, evidence } = await scenario('exit-pass');
     expect(result).toMatchObject({ verdict: 'passed', workerExitCode: 0, environmentVerified: true,
