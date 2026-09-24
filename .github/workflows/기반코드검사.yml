@@ -36,6 +36,8 @@ jobs:
         run: npm test
       - name: CLI 진단
         run: node packages/engine/dist/명령.js doctor --json
+      - name: 큰 화면 증거의 실제 브라우저 회귀 검사
+        run: node scripts/이미지화면검증.mjs
       - name: Windows 데스크톱 실행 환경 준비
         if: runner.os == 'Windows'
         run: node node_modules/electron/install.js
