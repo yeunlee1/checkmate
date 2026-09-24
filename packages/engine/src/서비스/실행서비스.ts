@@ -9,7 +9,14 @@ import type { AdmissionResult, PlanRegistration, RunStore } from '@checkmate/con
 
 export type RunExecutor = (plan: PlanRegistration, initialResult: RunResult, signal: AbortSignal) => Promise<RunResult>;
 
-type LocalRun = { controller: AbortController; promise: Promise<RunResult>; started: boolean; cancelled: boolean };
+type LocalRun = {
+  controller: AbortController;
+  promise: Promise<RunResult>;
+  resolve: (result: RunResult) => void;
+  reject: (error: unknown) => void;
+  started: boolean;
+  cancelled: boolean;
+};
 
 export class RunService {
   private tail: Promise<unknown> = Promise.resolve();
@@ -24,12 +31,15 @@ export class RunService {
     const requestHash = createHash('sha256').update(JSON.stringify([projectId, planId, requestId])).digest('hex');
     const admitted = this.store.admitRun({ projectId, planId, requestId, requestHash, runId: randomUUID(), createdAt: new Date().toISOString() });
     if (!admitted.reused && !this.local.has(admitted.runId)) {
-      const local: LocalRun = { controller: new AbortController(), started: false, cancelled: false, promise: undefined as unknown as Promise<RunResult> };
-      const job = this.tail.then(() => this.execute(admitted.runId, planId, local));
-      local.promise = job;
+      let resolve!: (result: RunResult) => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<RunResult>((onSuccess, onFailure) => { resolve = onSuccess; reject = onFailure; });
+      const local: LocalRun = { controller: new AbortController(), started: false, cancelled: false, promise, resolve, reject };
+      const job = this.tail.then(() => local.cancelled ? undefined : this.execute(admitted.runId, planId, local));
       this.local.set(admitted.runId, local);
       this.tail = job.then(() => undefined, () => undefined);
-      void job.then(() => this.local.delete(admitted.runId), () => this.local.delete(admitted.runId));
+      void job.then((result) => { if (result) local.resolve(result); }, local.reject);
+      void promise.then(() => this.local.delete(admitted.runId), () => this.local.delete(admitted.runId));
     }
     return admitted;
   }
@@ -61,6 +71,7 @@ export class RunService {
       const result = this.store.finalizeRun(this.finish(current, 'cancelled'));
       local.cancelled = true;
       local.controller.abort();
+      local.resolve(result);
       this.local.delete(runId);
       return result;
     }

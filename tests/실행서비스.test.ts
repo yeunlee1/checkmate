@@ -149,6 +149,49 @@ test('두 작업 폴더의 실행을 직렬화하고 대기 중 취소한 실행
   expect(started).toEqual([first.runId]);
 });
 
+test('취소 전에 등록한 wait도 앞 실행의 종료 전에 취소 확정을 받는다', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started: string[] = [];
+  const { files, store, plan, service } = await setup(async (_plan, initial) => {
+    started.push(initial.runId);
+    await gate;
+    return passed(initial);
+  });
+  const secondPath = join(files.directory, '두번째');
+  await mkdir(secondPath);
+  const secondPlan: PlanRegistration = { ...plan,
+    workspace: { ...plan.workspace, id: randomUUID(), realPath: secondPath },
+    plan: { ...plan.plan, id: randomUUID() } };
+  store.registerPlan(secondPlan);
+  const first = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  const second = service.start({ projectId: plan.project.id, planId: secondPlan.plan.id, requestId: randomUUID() });
+  const existingWait = service.wait(second.runId);
+  const otherWait = service.wait(second.runId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.resolve();
+    expect(started).toEqual([first.runId]);
+    const cancelled = await service.cancel(second.runId);
+    const observed = await Promise.race([
+      Promise.all([existingWait, otherWait]),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 200); }),
+    ]);
+    expect(store.getRun(second.runId)?.state).toBe('cancelled');
+    expect(cancelled.state).toBe('cancelled');
+    expect((await service.wait(second.runId)).state).toBe('cancelled');
+    expect(observed).toEqual([cancelled, cancelled]);
+    expect(started).toEqual([first.runId]);
+  } finally {
+    clearTimeout(timer);
+    release();
+    await service.wait(first.runId);
+    await existingWait;
+    await otherWait;
+  }
+  expect(started).toEqual([first.runId]);
+});
+
 test('시작 직후 입력 객체를 바꿔도 접수된 계획만 실행한다', async () => {
   let executedPlanId: string | undefined;
   const { store, plan, service } = await setup(async (selected, initial) => {
