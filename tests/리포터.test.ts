@@ -1,6 +1,6 @@
 // 구조화 리포터의 파일 경계와 실제 부모 실행기 연동을 검증한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -55,8 +55,10 @@ describe('구조화 리포터', () => {
       const linked = createReporter({ runId: randomUUID(), evidenceDir: join(link, '내부'), writeLine: () => {} });
       await expect(linked.evidence(input)).rejects.toThrow('증거 폴더');
       if (process.platform === 'win32') {
-        const short = execFileSync('cmd.exe', ['/d', '/c', 'for %I in ("%CHECKMATE_TEST_ROOT%") do @echo %~sI'],
-          { env: { ...process.env, CHECKMATE_TEST_ROOT: root }, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true }).trim();
+        const probe = spawnSync('cmd.exe', ['/d', '/c', 'for %I in ("%CHECKMATE_TEST_ROOT%") do @echo %~sI'],
+          { env: { ...process.env, CHECKMATE_TEST_ROOT: root }, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true });
+        expect(probe.status).toBe(0);
+        const short = probe.stdout.trim();
         const reporter = createReporter({ runId: randomUUID(), evidenceDir: short, writeLine: () => {} });
         await reporter.evidence(input);
         expect(await readFile(join(root, '근거.txt'), 'utf8')).toBe('합성');
