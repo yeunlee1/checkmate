@@ -142,17 +142,17 @@ describe('소유 프로세스 실행', () => {
     const expected = createHash('sha256').update(secret).digest('hex');
     const script = `const {createHash}=require('node:crypto');
       const {spawnSync}=require('node:child_process');
-      const ps = '$ErrorActionPreference="Stop"; [Console]::Error.WriteLine("checkmate-query:started"); $v=[Console]::In.ReadToEnd() | ConvertFrom-Json; [Console]::Error.WriteLine("checkmate-query:input"); $p=Get-CimInstance Win32_Process -Filter ("ProcessId = " + [int]$v.pid) -OperationTimeoutSec 30; [Console]::Error.WriteLine("checkmate-query:queried"); if ($null -eq $p -or $p.Name -ne "작업보호.exe") { "false"; exit 1 }; if ($p.CommandLine.Contains($v.secret) -or $p.CommandLine.Contains($v.base64)) { "false"; exit 1 }; "true"';
+      const ps = '$ErrorActionPreference="Stop"; [Console]::Error.WriteLine("checkmate-query:started"); $line=[Console]::In.ReadLine(); [Console]::Error.WriteLine("checkmate-query:read"); $v=$line | ConvertFrom-Json; [Console]::Error.WriteLine("checkmate-query:input"); $p=Get-CimInstance Win32_Process -Filter ("ProcessId = " + [int]$v.pid) -OperationTimeoutSec 30; [Console]::Error.WriteLine("checkmate-query:queried"); if ($null -eq $p -or $p.Name -ne "작업보호.exe") { "false"; exit 1 }; if ($p.CommandLine.Contains($v.secret) -or $p.CommandLine.Contains($v.base64)) { "false"; exit 1 }; "true"';
       const powershell = require('node:path').join(process.env.SystemRoot,'System32','WindowsPowerShell','v1.0','powershell.exe');
       const proof = spawnSync(powershell, ['-NoProfile','-NonInteractive','-Command',ps], {
         env: {SystemRoot:process.env.SystemRoot}, input:JSON.stringify({pid:process.ppid,
           secret:process.env.CHECKMATE_SECRET,
-          base64:Buffer.from(process.env.CHECKMATE_SECRET).toString('base64')}), encoding:'utf8', timeout:45000});
+          base64:Buffer.from(process.env.CHECKMATE_SECRET).toString('base64')})+'\\n', encoding:'utf8', timeout:45000});
       process.stdout.write(JSON.stringify({hash:createHash('sha256').update(process.env.CHECKMATE_SECRET).digest('hex'),
         kept:process.env.CHECKMATE_SPECIAL === '한글=값\\n다음 줄' && process.env.CHECKMATE_EMPTY === '',
         inherited:!!process.env.CHECKMATE_SYNTHETIC_SECRET, commandLineClean:proof.status === 0 && proof.stdout.trim() === 'true',
         queryStatus:proof.status, queryError:proof.error?.code ?? null,
-        queryStages:proof.stderr?.match(/checkmate-query:(?:started|input|queried)/g) ?? []}));`;
+        queryStages:proof.stderr?.match(/checkmate-query:(?:started|read|input|queried)/g) ?? []}));`;
     process.env.CHECKMATE_SYNTHETIC_SECRET = 'caller-only';
     try {
       const target = command(script);
@@ -162,7 +162,7 @@ describe('소유 프로세스 실행', () => {
       expect(result).toMatchObject({ status: 'exited', exitCode: 0, cleanupVerified: true });
       expect(JSON.parse(result.stdout)).toEqual({ hash: expected, kept: true,
         inherited: false, commandLineClean: true, queryStatus: 0, queryError: null,
-        queryStages: ['checkmate-query:started', 'checkmate-query:input', 'checkmate-query:queried'] });
+        queryStages: ['checkmate-query:started', 'checkmate-query:read', 'checkmate-query:input', 'checkmate-query:queried'] });
     } finally { delete process.env.CHECKMATE_SYNTHETIC_SECRET; }
   }, 75000);
 
