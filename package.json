@@ -4,15 +4,22 @@
   "private": true,
   "type": "module",
   "description": "A desktop companion for developers and AI coding agents to run E2E tests, verify results, and track evidence.",
-  "engines": { "node": ">=24 <25" },
-  "workspaces": ["packages/contracts", "packages/engine"],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "workspaces": [
+    "packages/contracts",
+    "packages/engine"
+  ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run build && vitest run",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && npm run typecheck && vitest run",
     "check": "npm test",
     "checkmate": "node packages/engine/dist/명령.js"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.13.6",
     "typescript": "7.0.2",
     "vitest": "5.0.1"

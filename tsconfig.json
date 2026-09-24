@@ -13,5 +13,6 @@
     "inlineSourceMap": true,
     "inlineSources": true,
     "skipLibCheck": true
-  }
+  },
+  "include": ["packages/*/src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
 }
