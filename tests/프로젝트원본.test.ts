@@ -1,6 +1,6 @@
 // 임시 합성 프로젝트로 원본 계약과 읽기 전용 소스 지문을 검증한다.
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, symlink, truncate, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, truncate, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -55,7 +55,7 @@ describe('프로젝트 원본', () => {
   it('세 원본을 읽고 안정된 해시와 실제 경로를 반환한다.', async () => {
     const first = await readProjectSource(root);
     const second = await readProjectSource(root);
-    expect(first.realPath).toBe(root);
+    expect(first.realPath).toBe(await realpath(root));
     expect(first.contentHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(first.sourceHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(first).toEqual(second);
@@ -108,6 +108,17 @@ describe('프로젝트 원본', () => {
       const approved = await readProjectSource(root);
       await writeFile(join(root, 'tests', 'run.mjs'), 'process.exit(9);');
       expect((await readProjectSource(root)).sourceHash).not.toBe(approved.sourceHash);
+    });
+
+  it.each(['.env.check.mjs', '.ENV.check.mjs', '.env', 'private.pem', 'private.KEY'])(
+    '지문 제외 파일명 %s를 실행 진입점으로 승인하지 않는다.', async (name) => {
+      await mkdir(join(root, 'tests'));
+      await writeFile(join(root, 'tests', name), 'process.exit(0);');
+      (project.commands as Record<string, unknown>[])[0]!.entry = `tests/${name}`;
+      await save();
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
+      await writeFile(join(root, 'tests', name), 'process.exit(9);');
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
     });
 
   it('중복과 없는 참조 및 필수 검사가 없는 프로필을 거절한다.', async () => {
