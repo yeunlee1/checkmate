@@ -118,6 +118,14 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     sizes.push({ width, height, zoom, overflow, violations: violations.length });
   }
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setSize(1440, 960); window.webContents.setZoomFactor(1); });
+  await page.getByRole('button', { name: '도움말', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '체크메이트 시작하기', exact: true })).toBeVisible();
+  await page.getByText('서비스가 중단되거나 정리가 미확인일 때', { exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByText('새 실행은 허용되지만 과거 미확인 결과는 그대로 보존됩니다.', { exact: false })).toBeVisible();
+  assert.equal((await new AxeBuilder({ page }).setLegacyMode().analyze()).violations.length, 0);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
+  await page.screenshot({ path: join(artifacts, '도움말.png'), fullPage: true });
   await page.getByRole('button', { name: '설정', exact: true }).click();
   await page.getByRole('button', { name: '현재 자료 백업', exact: true }).click();
   await expect(page.getByRole('button', { name: '백업 지문 복사', exact: true })).toBeVisible({ timeout: 30000 });

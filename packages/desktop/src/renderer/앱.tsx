@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 import { VisualEvidence, parseDesignEvidence } from './증거시각화.js';
 import type { DesignEvidence, VisualEvidenceProps } from './증거시각화.js';
+import { Help } from './도움말.js';
 
 type Bridge = {
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
@@ -14,7 +15,7 @@ type Bridge = {
 };
 declare global { interface Window { checkmate?: Bridge } }
 
-type PageName = 'projects' | 'checks' | 'history' | 'gaps' | 'settings';
+type PageName = 'projects' | 'checks' | 'history' | 'gaps' | 'settings' | 'help';
 type ResultTab = 'summary' | 'cases' | 'requirements' | 'gaps' | 'repair-bundle' | 'imported';
 type Page<T> = { items: T[]; nextCursor: string | null; total: number };
 type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
@@ -49,6 +50,7 @@ const navigation: { id: PageName; label: string; mark: string }[] = [
   { id: 'projects', label: '프로젝트', mark: '▣' }, { id: 'checks', label: '검사항목', mark: '☷' },
   { id: 'history', label: '실행이력', mark: '◷' }, { id: 'gaps', label: '미검증', mark: '◇' },
   { id: 'settings', label: '설정', mark: '⚙' },
+  { id: 'help', label: '도움말', mark: '?' },
 ];
 const stateLabels: Record<string, string> = { queued: '대기 중', running: '실행 중', finished: '종료',
   blocked: '차단됨', cancelled: '취소됨', unverifiable: '확인 불가' };
@@ -489,7 +491,7 @@ export function App() {
       <div className="brand"><Mark /><span><strong>CheckMate</strong><small>검사 결과와 근거</small></span></div>
       <nav className="side-nav" aria-label="화면 이동">{navigation.map((item) =>
         <button key={item.id} type="button" className={page === item.id ? 'nav-item current' : 'nav-item'}
-          onClick={() => navigate(item.id)} disabled={!serviceReady} aria-current={page === item.id ? 'page' : undefined} title={item.label}>
+          onClick={() => navigate(item.id)} disabled={!serviceReady && item.id !== 'help'} aria-current={page === item.id ? 'page' : undefined} title={item.label}>
           <span className="nav-mark" aria-hidden="true">{item.mark}</span>{item.label}</button>)}</nav>
       <div className="sidebar-foot"><span className={serviceReady ? 'connection-dot online' : 'connection-dot'} />
         {serviceReady ? '로컬 서비스 연결' : connected ? '서비스 확인 필요' : '개발 미리보기'}<small>{connection?.version ?? '서비스 확인 전'}</small></div>
@@ -499,10 +501,11 @@ export function App() {
         {serviceReady && <div className="top-actions"><span className="top-project">{project?.name ?? '프로젝트 미선택'}</span>
           {page === 'projects' && serviceReady && <button className="primary" type="button" onClick={() => void addProject()} disabled={!!busy}>+ 프로젝트 추가</button>}</div>}</header>
       <div className="content-wrap">
-        {!connected && <section className="panel preview" aria-live="polite"><div className="preview-icon"><Mark /></div>
+        {page === 'help' && <Help />}
+        {!connected && page !== 'help' && <section className="panel preview" aria-live="polite"><div className="preview-icon"><Mark /></div>
           <h2>데스크톱 연결이 필요합니다</h2><p>이 화면은 개발 미리보기입니다. 프로젝트 등록과 검사 실행은 CheckMate 앱에서 연결된 뒤 사용할 수 있습니다.</p>
           <p className="muted">실행 결과나 예시 데이터는 표시하지 않습니다.</p></section>}
-        {connected && <>
+        {connected && page !== 'help' && <>
           {loading && <p className="loading" role="status">로컬 서비스와 프로젝트를 확인하는 중입니다…</p>}
           {notice && <div className="notice" role="status" aria-live="polite">{notice}</div>}
           {!loading && needsInitialization && <section className="panel setup-panel" aria-live="polite"><p className="eyebrow">LOCAL SETUP</p>
