@@ -30,7 +30,15 @@ jobs:
           cache: npm
       - name: 고정한 의존성 설치
         run: npm ci --ignore-scripts
+      - name: 실제 브라우저 시험 환경 준비
+        run: npx playwright install --with-deps chromium
       - name: 빌드와 실제 프로세스 회귀 검사
         run: npm test
       - name: CLI 진단
         run: node packages/engine/dist/명령.js doctor --json
+      - name: Windows 데스크톱 실행 환경 준비
+        if: runner.os == 'Windows'
+        run: node node_modules/electron/install.js
+      - name: Windows 실제 데스크톱 흐름 검사
+        if: runner.os == 'Windows'
+        run: npm run desktop:test
