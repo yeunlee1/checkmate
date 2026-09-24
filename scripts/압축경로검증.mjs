@@ -87,14 +87,14 @@ async function main() {
   run(compiler, ['/nologo', '/target:exe', `/out:${launcher}`, join(root, 'scripts', '압축실행기.cs')]);
   const probeSource = join(testRoot, '패키지검증.cs');
   const probe = join(testRoot, '패키지검증.exe');
-  await writeFile(probeSource, `// ZIP 항목을 .NET Framework Packaging으로 읽는다.\nusing System;\nusing System.IO;\nusing System.IO.Packaging;\nclass Probe { static int Main(string[] args) { try { using (Package p = Package.Open(args[0], FileMode.Open, FileAccess.Read)) { foreach (PackagePart part in p.GetParts()) Console.WriteLine(part.Uri.OriginalString); } return 0; } catch (Exception e) { Console.Error.WriteLine(e); return 1; } } }\n`, 'utf8');
+  await writeFile(probeSource, `// ZIP 항목 판독과 지원하지 않는 형식의 정규화 거절을 확인한다.\nusing System;\nusing System.IO;\nusing System.IO.Packaging;\nusing System.Reflection;\nclass Probe { static int Main(string[] args) { try { if (args.Length == 2) { Assembly.LoadFrom(args[0]).GetType("ZipLauncher").GetMethod("NormalizeZip", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { args[1] }); return 0; } using (Package p = Package.Open(args[0], FileMode.Open, FileAccess.Read)) { foreach (PackagePart part in p.GetParts()) Console.WriteLine(part.Uri.OriginalString); } return 0; } catch (Exception e) { Console.Error.WriteLine(e); return 1; } } }\n`, 'utf8');
   const windowsBase = join(windowsRoot, 'Microsoft.NET', 'assembly', 'GAC_MSIL', 'WindowsBase', 'v4.0_4.0.0.0__31bf3856ad364e35', 'WindowsBase.dll');
   run(compiler, ['/nologo', '/target:exe', `/out:${probe}`, `/r:${windowsBase}`, probeSource]);
 
   const plain = join(testRoot, '기본.zip');
   const utf8 = join(testRoot, 'UTF8만.zip');
   const fixed = join(testRoot, '수정 경로 (공백).zip');
-  for (const [exe, file, extra] of [[native, plain, []], [native, utf8, ['-mcu=on']], [launcher, fixed, []]]) {
+  for (const [exe, file, extra] of [[native, plain, ['-mcp=949', '-mcu=off']], [native, utf8, ['-mcu=on']], [launcher, fixed, []]]) {
     run(exe, ['a', file, '-tzip', '-aoa', '-y', '-mmt', 'on', '*', ...extra], input);
   }
   const basic = run(probe, [plain], root, true);
@@ -129,7 +129,15 @@ async function main() {
   const defaultFlag = zipNames(await readFile(plain)).find(item => item.raw.endsWith('.js') && /[^\x00-\x7f]/.test(item.raw))?.flag;
   const utf8OnlyFlag = zipNames(await readFile(utf8)).find(item => item.raw === expected[0])?.flag;
   assert(defaultFlag === 0 && utf8OnlyFlag === 0x800, '기본 ZIP과 UTF-8 옵션 ZIP의 이름 표시가 예상과 다릅니다.');
-  console.log(JSON.stringify({ status: 'passed', testRoot, defaultFlag, utf8OnlyFlag, corrected: entries.filter(item => item.original).map(item => ({ alias: item.raw, original: item.original, flag: item.flag })), packaging: corrected.stdout.trim().split(/\r?\n/), hashes, collisionRejected: true }, null, 2));
+  // Python ZipFile.open('a.js', 'w', force_zip64=True)로 x 한 바이트를 쓴 유효한 ZIP이다.
+  const zip64Bytes = Buffer.from('UEsDBC0AAAAAAAAAIQCDFtyM//////////8EABQAYS5qcwEAEAABAAAAAAAAAAEAAAAAAAAAeFBLAQItAC0AAAAAAAAAIQCDFtyMAQAAAAEAAAAEAAAAAAAAAAAAAACAAQAAAABhLmpzUEsFBgAAAAABAAEAMgAAADcAAAAAAA==', 'base64');
+  const zip64 = join(testRoot, 'ZIP64로컬.zip');
+  await writeFile(zip64, zip64Bytes);
+  run(native, ['t', zip64]);
+  const rejected = run(probe, [launcher, zip64], root, true);
+  assert(rejected.status === 1 && rejected.stderr.includes('System.IO.InvalidDataException'), '로컬 ZIP64 추가 영역을 거절하지 못했습니다.');
+  assert((await readFile(zip64)).equals(zip64Bytes), 'ZIP64 거절 중 원본을 바꿨습니다.');
+  console.log(JSON.stringify({ status: 'passed', testRoot, defaultCodePage: 949, defaultFlag, utf8OnlyFlag, corrected: entries.filter(item => item.original).map(item => ({ alias: item.raw, original: item.original, flag: item.flag })), packaging: corrected.stdout.trim().split(/\r?\n/), hashes, collisionRejected: true, zip64Rejected: true }, null, 2));
 }
 
 main().catch(error => { console.error(error); console.error(`검증 폴더: ${testRoot}`); process.exitCode = 1; });

@@ -54,6 +54,7 @@ internal static class ZipLauncher
                 if (at + 4 > extra.Length) throw new InvalidDataException("ZIP 추가 영역이 잘렸습니다.");
                 int size = U16(extra, at + 2);
                 if (at + 4 + size > extra.Length) throw new InvalidDataException("ZIP 추가 영역 길이가 잘못됐습니다.");
+                if (U16(extra, at) == 0x0001) throw new InvalidDataException("ZIP64 추가 영역은 지원하지 않습니다.");
                 if (U16(extra, at) != 0x7075) output.Write(extra, at, 4 + size);
                 at += 4 + size;
             }
