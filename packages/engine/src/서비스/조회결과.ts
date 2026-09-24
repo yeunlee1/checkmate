@@ -35,11 +35,28 @@ export function compactCase(item: RunResult['cases'][number]) {
 export function resultSummary(result: RunResult, integrity: 'verified' | 'degraded' | 'pending' = 'pending') {
   const statuses: Record<string, number> = {};
   for (const item of result.cases) statuses[item.status] = (statuses[item.status] ?? 0) + 1;
-  return { runId: result.runId, projectId: result.projectId, profile: result.profile, origin: result.origin,
+  const failures = result.cases.filter((item) => item.status !== 'passed');
+  const summary = { runId: result.runId, projectId: result.projectId, profile: result.profile, origin: result.origin,
     state: result.state, verdict: result.verdict, effectiveVerdict: integrity === 'degraded' && result.verdict === 'passed' ? 'unknown' : result.verdict,
     finalized: result.finalized, integrity, reusablePassed: result.verdict === 'passed' && integrity === 'verified',
     planHash: result.planHash, sourceBefore: result.sourceBefore, sourceAfter: result.sourceAfter,
     workerExitCode: result.workerExitCode, environmentVerified: result.environmentVerified, evidenceVerified: result.evidenceVerified,
     cleanupVerified: result.cleanupVerified, planned: result.plannedChecks.length, required: result.requiredChecks.length,
-    counts: statuses, reasons: result.reasons, failures: result.cases.filter((item) => item.status !== 'passed').slice(0, 5).map(compactCase) };
+    total: result.cases.length, counts: statuses, reasons: [] as string[], omittedReasons: result.reasons.length,
+    failures: [] as ReturnType<typeof compactCase>[], omittedFailures: failures.length,
+    detail: '실패 전체는 get_run_result의 cases 또는 repair-bundle section에서 조회해 주세요.' };
+  const fits = () => Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({
+    apiVersion: 1, requestId: '0'.repeat(36), ok: true, data: summary,
+  }) }], isError: false }), 'utf8') <= 7800;
+  for (const reason of result.reasons) {
+    summary.reasons.push(reason);
+    summary.omittedReasons -= 1;
+    if (!fits()) { summary.reasons.pop(); summary.omittedReasons += 1; break; }
+  }
+  for (const item of failures.slice(0, 5)) {
+    summary.failures.push(compactCase(item));
+    summary.omittedFailures -= 1;
+    if (!fits()) { summary.failures.pop(); summary.omittedFailures += 1; break; }
+  }
+  return summary;
 }

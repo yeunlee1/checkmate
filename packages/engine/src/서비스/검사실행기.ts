@@ -11,7 +11,7 @@ import { projectSourceSchema, type CheckDefinition, type ProjectSource } from '@
 import type { PlanRegistration } from '@checkmate/contracts/runs';
 import type { RunExecutor } from './실행서비스.js';
 import { readProjectSource, fingerprintSource } from '../프로젝트/원본읽기.js';
-import { readCheckedFile } from '../프로젝트/소스지문.js';
+import { assertIncludedEntry, readCheckedFile } from '../프로젝트/소스지문.js';
 import { readAdapterEvents } from '../이벤트읽기.js';
 import type { EvidenceStore } from '../저장/증거저장.js';
 import type { EventStore } from '../저장/이벤트저장.js';
@@ -86,6 +86,7 @@ async function fixedCommands(sourceRoot: string, source: ProjectSource, plan: Pl
     const item = commands.get(check.commandId)!;
     if (chosen.some((value) => value.id === item.id)) continue;
     const parts = item.entry.split('/');
+    assertIncludedEntry(parts);
     await readCheckedFile(sourceRoot, parts);
     const entry = join(sourceRoot, ...parts);
     if (!inside(sourceRoot, entry) || await realpath(entry) !== entry) throw new Error('명령 진입점이 프로젝트 밖입니다.');
@@ -235,9 +236,13 @@ export function createProjectExecutor(options: Options): RunExecutor {
               : message.outcome.status === 'cancelled' ? 'interrupted' : 'unknown';
           cases.set(id, caseFor(check, status, `명령 종료 상태 ${message.outcome.status}, 코드 ${message.outcome.exitCode ?? '없음'}`,
             [message.evidence.id]));
-        } else if (message.outcome.status === 'exited' && message.outcome.exitCode !== 0) {
-          cases.set(id, { ...cases.get(id)!, status: 'failed',
-            observed: `실제 명령 종료 코드 ${message.outcome.exitCode}` });
+        } else if ((message.outcome.status !== 'exited' || message.outcome.exitCode !== 0)
+          && cases.get(id)!.status === 'passed') {
+          const status = message.outcome.status === 'exited' ? 'failed'
+            : message.outcome.status === 'timed-out' ? 'timed-out'
+              : message.outcome.status === 'cancelled' ? 'interrupted' : 'unknown';
+          cases.set(id, { ...cases.get(id)!, status,
+            observed: `명령 종료 상태 ${message.outcome.status}, 코드 ${message.outcome.exitCode ?? '없음'}` });
         }
       }
     }

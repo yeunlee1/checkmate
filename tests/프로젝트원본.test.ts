@@ -92,6 +92,24 @@ describe('프로젝트 원본', () => {
     expect(await fingerprintSource(root)).toBe(untracked);
   });
 
+  it.each(['dist', 'out', 'node_modules', '.runtime', '.git', 'coverage', '.vite'])(
+    '%s 안의 명령 진입점은 재빌드 전에도 거절하고 일반 Node 경로는 허용한다.', async (directory) => {
+      await mkdir(join(root, directory));
+      await writeFile(join(root, directory, 'run.mjs'), 'process.exit(0);');
+      (project.commands as Record<string, unknown>[])[0]!.entry = `${directory}/run.mjs`;
+      await save();
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
+      await writeFile(join(root, directory, 'run.mjs'), 'process.exit(9);');
+      await expect(readProjectSource(root)).rejects.toMatchObject({ code: 'invalid-project' });
+      (project.commands as Record<string, unknown>[])[0]!.entry = 'tests/run.mjs';
+      await mkdir(join(root, 'tests'));
+      await writeFile(join(root, 'tests', 'run.mjs'), 'process.exit(0);');
+      await save();
+      const approved = await readProjectSource(root);
+      await writeFile(join(root, 'tests', 'run.mjs'), 'process.exit(9);');
+      expect((await readProjectSource(root)).sourceHash).not.toBe(approved.sourceHash);
+    });
+
   it('중복과 없는 참조 및 필수 검사가 없는 프로필을 거절한다.', async () => {
     checks.push({ ...checks[0] });
     await save();

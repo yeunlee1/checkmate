@@ -16,6 +16,12 @@ export class ProjectSourceError extends Error {
 
 const excludedDirectories = ['.git', 'node_modules', '.runtime', 'dist', 'out', 'coverage', '.vite'];
 const exclusionRules = { version: 1, directories: excludedDirectories, files: ['.env', '.env.*', '*.pem', '*.key'] };
+
+export function assertIncludedEntry(parts: string[]): void {
+  if (parts.slice(0, -1).some((part) => excludedDirectories.includes(part.toLowerCase()))) {
+    throw new ProjectSourceError('invalid-project', '명령 진입점은 소스 지문에 포함되는 경로에 두어야 합니다. tests/검사.mjs 같은 Node 파일을 사용해 주세요.');
+  }
+}
 const maxSourceFiles = 10_000;
 const maxSourceBytes = 256 * 1024 * 1024;
 

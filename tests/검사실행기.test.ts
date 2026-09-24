@@ -1,6 +1,6 @@
 // 합성 프로젝트의 실제 작업 프로세스 종료와 결과 및 증거 판정을 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -28,7 +28,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 type Scenario = 'exit-pass' | 'exit-fail' | 'ndjson-pass' | 'ndjson-fail' | 'missing'
   | 'duplicate' | 'outside' | 'tampered-evidence' | 'source-change' | 'prechange' | 'cancel'
-  | 'worker-crash' | 'secret-output' | 'two-commands';
+  | 'worker-crash' | 'secret-output' | 'two-commands' | 'ndjson-timeout' | 'ndjson-output-limit';
 
 const script = String.raw`
 import { createHash, randomUUID } from 'node:crypto';
@@ -55,6 +55,8 @@ if (mode.startsWith('ndjson') || mode === 'duplicate' || mode === 'outside'
 if (mode === 'duplicate') process.stdout.write(event(2, 'case-result', result) + '\n');
 if (mode === 'tampered-evidence') process.stdout.write(event(2, 'evidence-created', evidence) + '\n');
 if (mode === 'source-change') writeFileSync(join(process.cwd(), 'source.txt'), '변경');
+if (mode === 'ndjson-timeout') { setInterval(() => {}, 1000); await new Promise(() => {}); }
+if (mode === 'ndjson-output-limit') { process.stdout.write('X'.repeat(300000)); await new Promise(() => {}); }
 process.exit(mode === 'exit-fail' || mode === 'ndjson-fail' ? 9 : 0);
 `;
 
@@ -72,7 +74,7 @@ async function scenario(mode: Scenario) {
   const source = {
     project: { schemaVersion: 1, id: projectId, name: '합성 프로젝트', repositoryIdentity: 'synthetic:executor',
       commands: [{ id: 'run', title: '합성 명령', runtime: 'node', entry: 'tests/run.mjs',
-        args: [mode], timeoutMs: 5000, env: { NODE_ENV: 'test' }, writes: [],
+        args: [mode], timeoutMs: mode === 'ndjson-timeout' ? 1200 : 5000, env: { NODE_ENV: 'test' }, writes: [],
         resultFormat: ndjson ? 'ndjson' : 'exit-code' },
       ...(second ? [{ id: 'other-run', title: '두 번째 명령', runtime: 'node', entry: 'tests/run.mjs',
         args: [mode, 'check-2'], timeoutMs: 5000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' }] : [])],
@@ -115,7 +117,10 @@ async function scenario(mode: Scenario) {
     }) : null;
     const result = await service.wait(started.runId);
     if (cancellation) await cancellation;
-    return { result, evidence: evidence.list(started.runId), events: events.list(started.runId) };
+    const command = ['ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
+      ? JSON.parse(await readFile(join(runsRoot, started.runId, '명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
+      : null;
+    return { result, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
   } finally {
     db.close();
     await fixture.cleanup();
@@ -138,10 +143,20 @@ describe('고정 계획 검사실행기', () => {
   });
 
   it('NDJSON 성공 이벤트가 있어도 실제 명령이 실패하면 실패한다.', async () => {
-    const { result, events } = await scenario('ndjson-fail');
+    const { result, events, command } = await scenario('ndjson-fail');
     expect(result).toMatchObject({ verdict: 'failed', workerExitCode: 0,
       cases: [{ testId: 'check-1', status: 'failed' }] });
     expect(events).toHaveLength(1);
+    expect(command).toMatchObject({ status: 'exited', exitCode: 9 });
+  });
+
+  it.each(['ndjson-timeout', 'ndjson-output-limit'] as const)('%s 뒤에 남은 성공 이벤트를 통과로 확정하지 않는다.', async (mode) => {
+    const { result, evidence, command } = await scenario(mode);
+    expect(result.verdict).not.toBe('passed');
+    expect(result.cases[0]?.status).toBe(mode === 'ndjson-timeout' ? 'timed-out' : 'unknown');
+    expect(result.workerExitCode).toBe(0);
+    expect(evidence).toHaveLength(1);
+    expect(command).toMatchObject({ status: mode === 'ndjson-timeout' ? 'timed-out' : 'output-limit', exitCode: null });
   });
 
   it('NDJSON 결과 누락을 통과로 만들지 않는다.', async () => {
@@ -175,9 +190,10 @@ describe('고정 계획 검사실행기', () => {
   });
 
   it('정상 NDJSON 검사 결과와 연속 저장 순서를 확인한다.', async () => {
-    const { result, events } = await scenario('ndjson-pass');
+    const { result, events, command } = await scenario('ndjson-pass');
     expect(result.verdict).toBe('passed');
     expect(events.map((event) => event.sequence)).toEqual([1]);
+    expect(command).toMatchObject({ status: 'exited', exitCode: 0 });
   });
 
   it('실제 worker 프로세스가 비정상 종료되면 통과를 거부한다.', async () => {

@@ -1,7 +1,7 @@
 // 프로젝트의 세 JSON 원본을 검증하고 카탈로그와 소스 지문을 묶는다.
 import { createHash } from 'node:crypto';
 import { projectSourceSchema, type ProjectSnapshot, type ProjectSource } from '@checkmate/contracts/project';
-import { checkedProjectRoot, fingerprintSource, ProjectSourceError, readCheckedFile } from './소스지문.js';
+import { assertIncludedEntry, checkedProjectRoot, fingerprintSource, ProjectSourceError, readCheckedFile } from './소스지문.js';
 
 const catalogNames = ['프로젝트.json', '요구사항.json', '검사항목.json'] as const;
 const catalogLimit = 1024 * 1024;
@@ -28,6 +28,7 @@ async function readCatalog(root: string): Promise<{ source: ProjectSource; conte
   const parsed = projectSourceSchema.safeParse({ project: values[0], requirements: values[1], checks: values[2] });
   if (!parsed.success) throw new ProjectSourceError('invalid-project', '프로젝트 원본 계약이 올바르지 않습니다.');
   const source = parsed.data;
+  for (const command of source.project.commands) assertIncludedEntry(command.entry.split('/'));
   return { source, contentHash: createHash('sha256').update(canonical(source)).digest('hex') };
 }
 
