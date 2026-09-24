@@ -1,0 +1,27 @@
+#!/bin/sh
+# 원격에 새로 올리는 커밋 제목을 검사하고 기존 원격 이력은 보존한다.
+repo_root="$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "제목 검사에는 PowerShell 7이 필요합니다."
+    exit 1
+fi
+zero_sha="0000000000000000000000000000000000000000"
+cr="$(printf '\r')"
+while read -r local_ref local_sha remote_ref remote_sha
+do
+    local_sha="${local_sha%$cr}"
+    remote_sha="${remote_sha%$cr}"
+    if [ "$local_sha" = "$zero_sha" ]; then
+        continue
+    fi
+    if [ "$remote_sha" = "$zero_sha" ]; then
+        commits="$(git rev-list "$local_sha" --not --remotes)" || exit 1
+    else
+        commits="$(git rev-list "$remote_sha..$local_sha" --not --remotes)" || exit 1
+    fi
+    for commit in $commits
+    do
+        subject="$(git log -n 1 --format=%s "$commit")" || exit 1
+        pwsh -NoLogo -NoProfile -File "$repo_root/scripts/깃/제목검사.ps1" -Title "$subject" || exit 1
+    done
+done

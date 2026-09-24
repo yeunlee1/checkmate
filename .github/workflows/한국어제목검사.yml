@@ -1,0 +1,54 @@
+name: 한국어 제목 검사
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, develop]
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  korean-title-check:
+    name: Git 제목 한국어 검사
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 내려받기
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 제목 검사 자체 검증
+        shell: pwsh
+        run: ./scripts/깃/제목검사검증.ps1
+      - name: 풀 리퀘스트 제목 검사
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          ./scripts/깃/제목검사.ps1 -Title $env:PR_TITLE
+      - name: 커밋 제목 검사
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          CURRENT_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'pull_request') {
+              $subjects = git log --format=%s "$($env:BASE_SHA)..$($env:HEAD_SHA)"
+          } elseif ($env:BEFORE_SHA -match '^0+$') {
+              $subjects = git log -n 1 --format=%s $env:CURRENT_SHA
+          } else {
+              $subjects = git log --format=%s "$($env:BEFORE_SHA)..$($env:CURRENT_SHA)"
+          }
+          if ($LASTEXITCODE -ne 0) { throw '검사할 커밋 범위를 읽지 못했습니다.' }
+          foreach ($subject in $subjects) {
+              ./scripts/깃/제목검사.ps1 -Title $subject
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

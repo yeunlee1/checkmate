@@ -1,0 +1,8 @@
+#!/bin/sh
+# 새 커밋 제목이 한국어 중심 규칙을 지키는지 검사한다.
+repo_root="$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v pwsh >/dev/null 2>&1; then
+    echo "제목 검사에는 PowerShell 7이 필요합니다."
+    exit 1
+fi
+exec pwsh -NoLogo -NoProfile -File "$repo_root/scripts/깃/제목검사.ps1" -CommitMessageFile "$1"
