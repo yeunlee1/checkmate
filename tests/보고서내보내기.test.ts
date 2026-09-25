@@ -28,3 +28,19 @@ it('진행 중 실행이나 조회 중 증거 손상은 내보내지 않는다.'
     ? response(resultSummary(run, ++summaries === 1 ? 'verified' : 'degraded'))
     : response({ items: [], nextCursor: null }), run.runId)).rejects.toMatchObject({ code: 'evidence-changed' });
 });
+it('영어 보고서에서도 원본 관측과 비신뢰 문자를 보존하고 고정 안내를 번역한다.', async () => {
+  const run = completeResult();
+  const html = await exportRunHtml(async (_method, input) => {
+    if (input.section === 'summary') return response(resultSummary(run, 'verified'));
+    if (input.section === 'requirements') return response({ items: [], nextCursor: null });
+    return response({ items: [{ ...run.cases[0], expected: null, observed: '<script>원본 관측</script>', truncated: true }], nextCursor: null });
+  }, run.runId, 'en');
+  expect(html).toContain('<html lang="en">');
+  expect(html).toContain('CheckMate test report');
+  expect(html).toContain('Expected behavior');
+  expect(html).toContain('Not recorded');
+  expect(html).toContain('have been shortened');
+  expect(html).toContain('&lt;script&gt;원본 관측&lt;/script&gt;');
+  expect(html).not.toContain('<script>');
+  expect(html).not.toContain('증거 ID');
+});

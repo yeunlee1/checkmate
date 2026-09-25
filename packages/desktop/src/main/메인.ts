@@ -28,6 +28,10 @@ let expectedUrl = '';
 function checkSender(event: IpcMainInvokeEvent): void {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url.split('#')[0] !== expectedUrl) throw new ServiceError('untrusted-frame');
 }
+function dialogText(language: unknown) {
+  if (language !== undefined && language !== 'ko' && language !== 'en') throw new ServiceError('invalid-input');
+  return (korean: string, english: string) => language === 'en' ? english : korean;
+}
 function options() {
   if (!nodeExecutable) throw new ServiceError('node-runtime-missing', '개발용 Node 실행 경로가 없습니다. desktop:dev로 실행해 주세요.');
   return { dataRoot, nodeExecutable, serviceEntry };
@@ -73,15 +77,17 @@ else {
       return await callService(request, options());
     } catch (error) { return errorResponse(requestId, error); }
   });
-  ipcMain.handle('checkmate:choose-directory', async (event, purpose?: string) => {
+  ipcMain.handle('checkmate:choose-directory', async (event, purpose?: string, language?: unknown) => {
     checkSender(event);
-    const title = purpose === 'backup' ? '완성된 백업 폴더 선택' : purpose === 'restore' ? '복구할 새 빈 자료 폴더 선택' : '검사할 프로젝트 폴더 선택';
-    const result = await dialog.showOpenDialog(window!, { title, properties: ['openDirectory'] });
+    const t = dialogText(language);
+    const title = purpose === 'backup' ? t('완성된 백업 폴더 선택', 'Choose a completed backup') : purpose === 'restore' ? t('복구할 새 빈 자료 폴더 선택', 'Choose an empty folder for recovery') : t('검사할 프로젝트 폴더 선택', 'Choose a project to test');
+    const result = await dialog.showOpenDialog(window!, { title, buttonLabel: t('폴더 선택', 'Choose folder'), properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
-  ipcMain.handle('checkmate:choose-report', async event => {
+  ipcMain.handle('checkmate:choose-report', async (event, language?: unknown) => {
     checkSender(event);
-    const result = await dialog.showOpenDialog(window!, { title: '아틀리에 과거 보고서 선택', filters: [{ name: 'JSON 보고서', extensions: ['json'] }], properties: ['openFile'] });
+    const t = dialogText(language);
+    const result = await dialog.showOpenDialog(window!, { title: t('아틀리에 과거 보고서 선택', 'Choose a previous Atelier report'), buttonLabel: t('보고서 선택', 'Choose report'), filters: [{ name: t('JSON 보고서', 'JSON report'), extensions: ['json'] }], properties: ['openFile'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   ipcMain.handle('checkmate:initialize', async (event) => {
@@ -89,13 +95,14 @@ else {
     await initializeLocalStore(options());
     await refreshLauncher();
   });
-  ipcMain.handle('checkmate:export', async (event, runId: unknown) => {
+  ipcMain.handle('checkmate:export', async (event, runId: unknown, language?: unknown) => {
     checkSender(event);
     const id = randomUUID();
     try {
+      const t = dialogText(language);
       const request = apiRequestSchema.parse({ apiVersion: 1, requestId: id, method: 'result', input: { runId, section: 'summary' } });
-      const html = await exportRunHtml((method, input) => callService(apiRequestSchema.parse({ ...request, requestId: randomUUID(), method, input }), options()), String(runId));
-      const selected = await dialog.showSaveDialog(window!, { title: '검증 보고서 저장', defaultPath: `검증보고서-${String(runId).slice(0, 8)}.html`, filters: [{ name: 'HTML 보고서', extensions: ['html'] }] });
+      const html = await exportRunHtml((method, input) => callService(apiRequestSchema.parse({ ...request, requestId: randomUUID(), method, input }), options()), String(runId), language === 'en' ? 'en' : 'ko');
+      const selected = await dialog.showSaveDialog(window!, { title: t('검증 보고서 저장', 'Save test report'), buttonLabel: t('보고서 저장', 'Save report'), defaultPath: `${t('검증보고서', 'CheckMate-report')}-${String(runId).slice(0, 8)}.html`, filters: [{ name: t('HTML 보고서', 'HTML report'), extensions: ['html'] }] });
       if (selected.canceled || !selected.filePath) return { apiVersion: 1, requestId: id, ok: true, data: { cancelled: true } };
       await writeFile(selected.filePath, html, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       return { apiVersion: 1, requestId: id, ok: true, data: { path: selected.filePath } };

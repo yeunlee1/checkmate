@@ -26,6 +26,7 @@ try {
 import { randomUUID, createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+await new Promise(resolve => setTimeout(resolve, 3500));
 const id = randomUUID();
 const content = Buffer.from('<script>globalThis.checkmateEvidenceExecuted = true</script>합성 증거');
 writeFileSync(join(process.env.CHECKMATE_EVIDENCE_DIR, '증거.html'), content);
@@ -37,11 +38,18 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await writeFile(join(project, 'checkmate', '프로젝트.json'), JSON.stringify({ schemaVersion: 1, id: projectId,
     name: '데스크톱 합성 검증', repositoryIdentity: 'synthetic:desktop',
     commands: [{ id: 'quick', title: '합성 명령 실행', runtime: 'node', entry: 'scripts/검사.mjs', args: [],
-      timeoutMs: 5000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' }],
-    profiles: [{ id: 'quick', title: '빠른 검사', checkIds: ['logic-1'] }] }));
-  await writeFile(join(project, 'checkmate', '요구사항.json'), JSON.stringify([{ id: 'requirement-1', title: '실제 종료 확인', description: '화면에서 승인한 명령의 종료를 확인한다.' }]));
+      timeoutMs: 10000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' },
+      { id: 'database', title: '시험 DB 승인 안내 검증', runtime: 'node', entry: 'scripts/검사.mjs', args: [],
+        timeoutMs: 10000, env: {}, writes: [], resultFormat: 'ndjson', resources: ['postgres-test'] }],
+    profiles: [{ id: 'quick', title: '빠른 검사', checkIds: ['logic-1'] },
+      { id: 'database', title: '시험 DB 계획', checkIds: ['database-1'] }] }));
+  await writeFile(join(project, 'checkmate', '요구사항.json'), JSON.stringify([
+    { id: 'requirement-1', title: '실제 종료 확인', description: '화면에서 승인한 명령의 종료를 확인한다.' },
+    { id: 'requirement-database', title: '시험 DB 계획 안내', description: '영어 승인 안내만 확인하고 실행하지 않는다.' }]));
   await writeFile(join(project, 'checkmate', '검사항목.json'), JSON.stringify([{ id: 'logic-1', title: '정상 종료', requirementId: 'requirement-1',
-    commandId: 'quick', required: true, kind: 'logic', expected: '종료코드 0', codePaths: ['scripts/검사.mjs'] }]));
+    commandId: 'quick', required: true, kind: 'logic', expected: '종료코드 0', codePaths: ['scripts/검사.mjs'] },
+    { id: 'database-1', title: '시험 DB 승인 안내', requirementId: 'requirement-database', commandId: 'database',
+      required: true, kind: 'logic', expected: '승인 범위 안내', codePaths: [] }]));
   service = await startLocalService(dataRoot);
   const env = { ...process.env, CHECKMATE_NODE_PATH: process.execPath, CHECKMATE_DATA_DIR: dataRoot };
   delete env.ELECTRON_RUN_AS_NODE;
@@ -57,14 +65,20 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   assert.equal(await page.evaluate(() => typeof globalThis.require), 'undefined');
   // OS 폴더 선택 결과만 고정하고 모든 등록과 실행 요청은 실제 서비스를 사용한다.
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, project);
-  await page.getByRole('button', { name: '+ 프로젝트 추가', exact: true }).click();
+  await page.getByTestId('add-project').click();
   await expect(page.getByRole('heading', { name: '데스크톱 합성 검증', exact: true })).toBeVisible();
-  await page.getByLabel('검사 프로필', { exact: true }).selectOption('quick');
-  await page.getByRole('button', { name: '계획 확인', exact: true }).click();
-  await expect(page.getByRole('button', { name: '검사 실행', exact: true })).toBeDisabled();
-  await page.getByLabel('위 명령, 환경 값, 쓰기 범위와 시험 자원을 확인했습니다.', { exact: true }).check();
-  await page.getByRole('button', { name: '이 계획 승인', exact: true }).click();
-  await page.getByRole('button', { name: '검사 실행', exact: true }).click();
+  const checkSetTop = await page.getByTestId('profile-select').evaluate(element => element.getBoundingClientRect().top);
+  assert.ok(checkSetTop < await page.evaluate(() => window.innerHeight), '프로젝트 선택 뒤 첫 화면에서 검사 선택을 찾을 수 있어야 합니다.');
+  await page.getByTestId('profile-select').selectOption('quick');
+  await page.getByTestId('inspect-plan').click();
+  await expect(page.getByTestId('start-run')).toBeDisabled();
+  await page.screenshot({ path: join(artifacts, '검사계획.png'), fullPage: true });
+  await page.getByTestId('plan-consent').check();
+  await page.getByTestId('approve-plan').click();
+  await page.getByTestId('start-run').click();
+  await expect(page.getByTestId('active-command')).toContainText('합성 명령 실행', { timeout: 15000 });
+  await expect(page.locator('.run-panel .panel-heading').getByText('통과', { exact: true })).not.toBeVisible();
+  await page.screenshot({ path: join(artifacts, '검사진행.png'), fullPage: true });
   await expect(page.locator('.run-panel .panel-heading').getByText('통과', { exact: true })).toBeVisible({ timeout: 20000 });
   const history = await page.evaluate(async (id) => window.checkmate.request('history', { projectId: id }), projectId);
   assert.equal(history.ok, true);
@@ -82,7 +96,13 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await expect(page.locator('.evidence-text')).not.toBeEmpty();
   assert.equal(await page.evaluate(() => globalThis.checkmateEvidenceExecuted), undefined);
   await expect(page.locator('.evidence-text')).toContainText('<script>');
-  await page.getByRole('button', { name: '닫기', exact: true }).click();
+  // 이전 증거를 닫지 않고 같은 계획을 다시 실행해 실행 간 자료 혼입을 확인한다.
+  await page.getByTestId('nav-projects').click();
+  await page.getByTestId('start-run').click();
+  await expect(page.getByTestId('active-command')).toContainText('합성 명령 실행', { timeout: 15000 });
+  await expect(page.locator('.evidence-panel')).toHaveCount(0);
+  await expect(page.locator('.run-panel .panel-heading').getByText('통과', { exact: true })).toBeVisible({ timeout: 20000 });
+  await expect(page.locator('.evidence-panel')).toHaveCount(0);
   await page.getByRole('tab', { name: '요약', exact: true }).click();
   const reportPath = join(root, '검증보고서.html');
   await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }); }, reportPath);
@@ -101,6 +121,55 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
       assert.ok((await reportPage.locator('body').innerText()).includes('요구사항 근거'));
     }
   } finally { await reportBrowser.close(); }
+  // 같은 실제 실행을 영어로 다시 열고 언어 저장, 기본 대화상자와 내보내기를 확인한다.
+  await page.getByTestId('language-select').selectOption('en');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await page.getByTestId('nav-help').click();
+  await expect(page.getByRole('heading', { name: 'Get started with CheckMate', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('language-select')).toHaveValue('en');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en');
+  await page.getByTestId('project-select').selectOption(projectId);
+  await page.getByTestId('nav-history').click();
+  await page.locator('.history-list .history-open').first().click();
+  await expect(page.locator('.run-panel .panel-heading').getByText('Passed', { exact: true })).toBeVisible();
+  const englishReportPath = join(root, '영어보고서.html');
+  await app.evaluate(({ dialog }, path) => { dialog.showSaveDialog = async (...args) => {
+    globalThis.checkmateDialogTitle = args.at(-1).title;
+    return { canceled: false, filePath: path };
+  }; }, englishReportPath);
+  await page.getByRole('button', { name: 'Save HTML report', exact: true }).click();
+  await expect(page.getByText('Report saved', { exact: false })).toBeVisible();
+  assert.equal(await app.evaluate(() => globalThis.checkmateDialogTitle), 'Save test report');
+  const englishReport = await readFile(englishReportPath, 'utf8');
+  assert.ok(englishReport.includes('<html lang="en">'));
+  assert.ok(englishReport.includes('Expected behavior'));
+  assert.ok(englishReport.includes('합성 증거') === false);
+  await page.evaluate(() => document.fonts.ready);
+  assert.equal(await page.evaluate(() => [...document.fonts].some(font => font.family === 'Pretendard' && font.status === 'loaded')), true);
+  const englishViolations = (await new AxeBuilder({ page }).setLegacyMode().analyze()).violations;
+  assert.equal(englishViolations.length, 0, JSON.stringify(englishViolations.map(item => ({ id: item.id, targets: item.nodes.map(node => node.target) }))));
+  await page.screenshot({ path: join(artifacts, '영어결과.png'), fullPage: true });
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(800, 600));
+  await page.waitForTimeout(150);
+  for (const item of await page.locator('.side-nav .nav-item').all()) {
+    assert.ok(await item.evaluate(element => parseFloat(getComputedStyle(element).fontSize)) >= 12, '작은 창에서도 메뉴 이름을 읽을 수 있어야 합니다.');
+  }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
+  assert.equal((await new AxeBuilder({ page }).setLegacyMode().analyze()).violations.length, 0);
+  await page.screenshot({ path: join(artifacts, '영어결과-작은창.png'), fullPage: true });
+  // DB 생성 없이 실제 계획 응답의 고정 자원 안내와 승인 경계를 영어로 확인한다.
+  await page.getByTestId('nav-projects').click();
+  await page.getByTestId('profile-select').selectOption('database');
+  await page.getByTestId('inspect-plan').click();
+  await expect(page.getByText('Creates a new disposable PostgreSQL container', { exact: false })).toBeVisible();
+  await expect(page.getByText('Allows migrations, writes, and deletion', { exact: false })).toBeVisible();
+  await expect(page.getByTestId('start-run')).toBeDisabled();
+  await page.getByTestId('nav-history').click();
+  await page.locator('.history-list .history-open').first().click();
+  await expect(page.locator('.run-panel .panel-heading').getByText('Passed', { exact: true })).toBeVisible();
+  await expect(page.locator('.run-panel .recorded-profile').first()).toContainText('Current name · Recorded ID');
+  await page.getByTestId('language-select').selectOption('ko');
   const sizes = [];
   for (const [width, height, zoom] of [[1280, 800, 1], [1920, 1080, 1], [1440, 960, 1.5], [1920, 1080, 2]]) {
     await app.evaluate(({ BrowserWindow }, size) => {
@@ -118,16 +187,17 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     sizes.push({ width, height, zoom, overflow, violations: violations.length });
   }
   await app.evaluate(({ BrowserWindow }) => { const window = BrowserWindow.getAllWindows()[0]; window.setSize(1440, 960); window.webContents.setZoomFactor(1); });
-  await page.getByRole('button', { name: '도움말', exact: true }).click();
+  await page.getByTestId('nav-help').click();
   await expect(page.getByRole('heading', { name: '체크메이트 시작하기', exact: true })).toBeVisible();
-  await page.getByText('서비스가 중단되거나 정리가 미확인일 때', { exact: true }).focus();
+  await page.getByText('실행이 중단되거나 정리가 확인되지 않을 때', { exact: true }).focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByText('새 실행은 허용되지만 과거 미확인 결과는 그대로 보존됩니다.', { exact: false })).toBeVisible();
+  await expect(page.getByText('과거 판정은 그대로 보존됩니다.', { exact: false })).toBeVisible();
   assert.equal((await new AxeBuilder({ page }).setLegacyMode().analyze()).violations.length, 0);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
   await page.screenshot({ path: join(artifacts, '도움말.png'), fullPage: true });
-  await page.getByRole('button', { name: '설정', exact: true }).click();
+  await page.getByTestId('nav-settings').click();
   await page.getByRole('button', { name: '현재 자료 백업', exact: true }).click();
+  await page.getByText('백업 지문', { exact: true }).click();
   await expect(page.getByRole('button', { name: '백업 지문 복사', exact: true })).toBeVisible({ timeout: 30000 });
   const restoreRoot = join(root, '복구 자료');
   await mkdir(restoreRoot);
@@ -138,7 +208,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await expect(page.getByText('복구한 자료 위치', { exact: false })).toBeVisible({ timeout: 30000 });
   const restored = await startLocalService(restoreRoot);
   try { assert.equal(restored.product.runs.getRun(runId)?.verdict, 'passed'); } finally { await restored.close(); }
-  await page.getByRole('button', { name: '실행이력', exact: true }).click();
+  await page.getByTestId('nav-history').click();
   const importedPath = join(root, '과거보고서.json');
   await writeFile(importedPath, JSON.stringify({ mode: 'quick', status: 'passed', source: { fingerprint: 'a'.repeat(64) },
     sourceAfter: { fingerprint: 'a'.repeat(64) }, steps: [{ id: 'types', status: 'passed', exitCode: 0 }], omitted: [] }));
@@ -148,14 +218,14 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await expect(page.locator('.run-panel .panel-heading').getByText('미확인', { exact: true })).toBeVisible();
   await page.getByRole('tab', { name: '가져온 원래 기록', exact: true }).click();
   await expect(page.locator('.evidence-text')).toContainText('"reportedStatus": "passed"');
-  await page.getByRole('button', { name: '프로젝트', exact: true }).click();
+  await page.getByTestId('nav-projects').click();
   await app.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, resolve('examples/대표검증'));
-  await page.getByRole('button', { name: '+ 프로젝트 추가', exact: true }).click();
-  await page.getByLabel('검사 프로필', { exact: true }).selectOption('defect');
-  await page.getByRole('button', { name: '계획 확인', exact: true }).click();
-  await page.getByLabel('위 명령, 환경 값, 쓰기 범위와 시험 자원을 확인했습니다.', { exact: true }).check();
-  await page.getByRole('button', { name: '이 계획 승인', exact: true }).click();
-  await page.getByRole('button', { name: '검사 실행', exact: true }).click();
+  await page.getByTestId('add-project').click();
+  await page.getByTestId('profile-select').selectOption('defect');
+  await page.getByTestId('inspect-plan').click();
+  await page.getByTestId('plan-consent').check();
+  await page.getByTestId('approve-plan').click();
+  await page.getByTestId('start-run').click();
   await expect(page.locator('.run-panel .panel-heading').getByText('실패', { exact: true })).toBeVisible({ timeout: 30000 });
   await page.getByRole('tab', { name: '검사 결과', exact: true }).click();
   const designCase = page.locator('.case-card').filter({ has: page.getByText('defect-design', { exact: true }) });
@@ -174,6 +244,8 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   }
   assert.deepEqual(errors, []);
   const report = { passed: true, runId, projectId, security, sizes, errors, reportExport: true, backupRestore: true, importedHistory: true, designOverlay: true,
+    liveProgress: true, englishInterface: true, languagePersistence: true, englishReport: true, bundledFont: true,
+    runEvidenceIsolation: true, compactNavigationLabels: true, englishResourceApproval: true,
     scope: '실제 Electron과 로컬 SQLite 및 작업 프로세스. OS 파일 선택 결과만 합성 경로로 고정.' };
   await writeFile(join(artifacts, '결과.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
