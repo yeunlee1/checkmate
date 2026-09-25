@@ -8,17 +8,17 @@
 </p>
 
 <p align="center">
-  <a href="문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0--alpha.1-2563eb?style=flat-square" alt="0.1.0-alpha.1 개발판"></a>
-  <a href="문서/사용안내.md"><img src="https://img.shields.io/badge/interface-Desktop%20%7C%20CLI%20%7C%20MCP-172438?style=flat-square" alt="Desktop, CLI, MCP 지원"></a>
-  <a href="문서/저장및연결계약.md"><img src="https://img.shields.io/badge/storage-Local%20SQLite-172438?style=flat-square" alt="로컬 SQLite 저장"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0--alpha.1-2563eb?style=flat-square" alt="0.1.0-alpha.1 개발판"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md"><img src="https://img.shields.io/badge/interface-Desktop%20%7C%20CLI%20%7C%20MCP-172438?style=flat-square" alt="Desktop, CLI, MCP 지원"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/저장및연결계약.md"><img src="https://img.shields.io/badge/storage-Local%20SQLite-172438?style=flat-square" alt="로컬 SQLite 저장"></a>
 </p>
 
 <p align="center">
   <a href="#빠르게-시작하기">빠르게 시작하기</a> ·
   <a href="#체크메이트의-다섯-가지-특징">핵심 기능</a> ·
   <a href="#ai와-함께-사용하기">AI 연결</a> ·
-  <a href="문서/사용안내.md">사용 안내</a> ·
-  <a href="문서/개발현황.md">개발 현황</a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md">사용 안내</a> ·
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md">개발 현황</a>
 </p>
 
 ---
@@ -77,7 +77,7 @@ npm run desktop:dev
 
 `defect` 프로필에는 저장·역할별 정보 노출·화면·접근성·계산 오류가 의도적으로 들어 있습니다. 이 프로필로 실패와 AI 수정 자료 묶음을 살펴볼 수 있습니다. 두 예제는 외부 계정이나 업무 DB 없이 실행됩니다.
 
-> 일회용 PostgreSQL을 사용하는 프로필에만 Linux 컨테이너를 실행할 수 있는 로컬 Docker가 필요합니다. 자세한 설정은 [격리 시험 DB 안내](문서/격리시험DB.md)를 참고하세요.
+> 일회용 PostgreSQL을 사용하는 프로필에만 Linux 컨테이너를 실행할 수 있는 로컬 Docker가 필요합니다. 자세한 설정은 [격리 시험 DB 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/격리시험DB.md)를 참고하세요.
 
 ## AI와 함께 사용하기.
 
@@ -96,7 +96,7 @@ AI에게 다음과 같이 지시할 수 있습니다.
 
 > CheckMate로 승인된 검사를 실행해. 최종 결과와 증거를 확인해서 실패·미완료·미확인을 구분해 보고해. 문제가 있으면 수정 자료 묶음과 필요한 증거만 읽고 코드를 보완해. 검사와 기대값을 약화하지 말고, 바뀐 계획은 내가 확인할 수 있게 알려줘.
 
-프로젝트 신뢰 등록과 계획 승인은 사람이 수행합니다. MCP는 이 승인 기능을 제공하지 않습니다. 자세한 명령과 결과 조회 방법은 [사용 안내](문서/사용안내.md)에 있습니다.
+프로젝트 신뢰 등록과 계획 승인은 사람이 수행합니다. MCP는 이 승인 기능을 제공하지 않습니다. 자세한 명령과 결과 조회 방법은 [사용 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md)에 있습니다.
 
 <details>
 <summary><strong>CLI로 시작하기.</strong></summary>
@@ -111,7 +111,7 @@ npm run checkmate -- projects --json
 npm run checkmate -- --help
 ```
 
-등록 후에는 `inspect`로 계획을 읽고 사람이 `approve`로 승인합니다. `run --wait`로 최종 판정을 기다리고 `result`에서 요약이나 `repair-bundle`을 조회합니다. 각 명령에 필요한 ID와 지문은 [CLI 사용 순서](문서/사용안내.md#cli와-mcp)를 참고하세요.
+등록 후에는 `inspect`로 계획을 읽고 사람이 `approve`로 승인합니다. `run --wait`로 최종 판정을 기다리고 `result`에서 요약이나 `repair-bundle`을 조회합니다. 각 명령에 필요한 ID와 지문은 [CLI 사용 순서](https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md#cli와-mcp)를 참고하세요.
 
 </details>
 
@@ -127,7 +127,7 @@ npm run checkmate -- --help
     └── 검사항목.json    검사와 요구사항의 연결
 ```
 
-[대표 예제](examples/대표검증)에서 정상·결함 프로필을 비교하고, [검사 작성 안내](문서/검사작성안내.md)에서 리포터와 증거 형식을 확인하세요. 프론트엔드 디자인, 접근성, 역할별 노출, 백엔드 로직의 검증 범위는 연결한 검사에 따라 정해집니다.
+[대표 예제](https://github.com/yeunlee1/checkmate/tree/develop/examples/대표검증)에서 정상·결함 프로필을 비교하고, [검사 작성 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/검사작성안내.md)에서 리포터와 증거 형식을 확인하세요. 프론트엔드 디자인, 접근성, 역할별 노출, 백엔드 로직의 검증 범위는 연결한 검사에 따라 정해집니다.
 
 ## 기술 구성과 개발 명령.
 
@@ -145,19 +145,19 @@ npm test                 # 빌드, 타입 검사, 회귀 검사
 npm run desktop:test     # 실제 Electron 화면 흐름 검사
 ```
 
-Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. 코드 서명, 깨끗한 Windows에서의 설치, 버전 간 업데이트 수용은 정식 출시 전에 남은 작업입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](문서/개발현황.md)에서 확인할 수 있습니다.
+Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. 코드 서명, 깨끗한 Windows에서의 설치, 버전 간 업데이트 수용은 정식 출시 전에 남은 작업입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
 
 ## 더 알아보기.
 
 | 문서 | 내용 |
 | --- | --- |
-| [사용 안내](문서/사용안내.md) | 첫 실행, 결과 읽기, CLI·MCP, 백업과 복구 |
-| [검사 작성 안내](문서/검사작성안내.md) | 프로젝트 등록 원본, 리포터, 증거 연결 |
-| [검출력 사용법](문서/검출력사용법.md) | 실제 Stryker 실행과 변이 점수 해석 |
-| [격리 시험 DB](문서/격리시험DB.md) | 일회용 PostgreSQL의 생성·실행·정리 |
-| [구현 기준 설계](문서/구현기준설계.md) | 구조, 보안 경계, 실행과 판정 기준 |
-| [개발 현황](문서/개발현황.md) | 구현 기능, 검증 근거, 남은 출시 조건 |
-| [깃 관리](문서/깃관리.md) | 작업 브랜치와 검증·병합 규칙 |
+| [사용 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md) | 첫 실행, 결과 읽기, CLI·MCP, 백업과 복구 |
+| [검사 작성 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/검사작성안내.md) | 프로젝트 등록 원본, 리포터, 증거 연결 |
+| [검출력 사용법](https://github.com/yeunlee1/checkmate/blob/develop/문서/검출력사용법.md) | 실제 Stryker 실행과 변이 점수 해석 |
+| [격리 시험 DB](https://github.com/yeunlee1/checkmate/blob/develop/문서/격리시험DB.md) | 일회용 PostgreSQL의 생성·실행·정리 |
+| [구현 기준 설계](https://github.com/yeunlee1/checkmate/blob/develop/문서/구현기준설계.md) | 구조, 보안 경계, 실행과 판정 기준 |
+| [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md) | 구현 기능, 검증 근거, 남은 출시 조건 |
+| [깃 관리](https://github.com/yeunlee1/checkmate/blob/develop/문서/깃관리.md) | 작업 브랜치와 검증·병합 규칙 |
 
 ---
 
