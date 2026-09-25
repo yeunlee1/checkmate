@@ -87,7 +87,7 @@ async function scenario(exitCode: number, tamper: boolean) {
       };
       return { ...result, ...assessResult(result) };
     };
-    const service = new RunService(store, (...args) => executor(...args).catch((error: unknown) => {
+    const service = new RunService(store, (plan, initial, signal) => executor(plan, initial, signal).catch((error: unknown) => {
       executorError = error;
       throw error;
     }));

@@ -28,6 +28,17 @@ export type Admission = {
 };
 export type AdmissionResult = { runId: string; reused: boolean };
 export type RunPage = { runs: RunResult[]; nextCursor: string | null };
+export type RunProgress = {
+  runId: string;
+  state: RunResult['state'];
+  finalized: boolean;
+  available: boolean;
+  phase: 'queued' | 'preparing' | 'running' | 'verifying' | 'cleaning' | 'finished' | 'unavailable';
+  currentCommand: { id: string; title: string } | null;
+  completedCommands: number;
+  totalCommands: number;
+  updatedAt: string | null;
+};
 export type RunStoreErrorCode = 'invalid-input' | 'project-not-found' | 'plan-stale' | 'request-conflict'
   | 'workspace-busy' | 'storage-busy' | 'storage-error' | 'run-not-found' | 'invalid-state';
 

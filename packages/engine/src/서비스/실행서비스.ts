@@ -4,10 +4,13 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { assessResult, resultInputSchema, runResultSchema } from '@checkmate/contracts';
 import type { RunResult } from '@checkmate/contracts';
+import { projectSourceSchema } from '@checkmate/contracts/project';
 import { RunStoreError } from '@checkmate/contracts/runs';
-import type { AdmissionResult, PlanRegistration, RunStore } from '@checkmate/contracts/runs';
+import type { AdmissionResult, PlanRegistration, RunProgress, RunStore } from '@checkmate/contracts/runs';
 
-export type RunExecutor = (plan: PlanRegistration, initialResult: RunResult, signal: AbortSignal) => Promise<RunResult>;
+export type ProgressUpdate = Pick<RunProgress, 'phase' | 'currentCommand' | 'completedCommands' | 'totalCommands' | 'available'>;
+export type RunExecutor = (plan: PlanRegistration, initialResult: RunResult, signal: AbortSignal,
+  onProgress?: (progress: ProgressUpdate) => void) => Promise<RunResult>;
 
 type LocalRun = {
   controller: AbortController;
@@ -16,6 +19,7 @@ type LocalRun = {
   reject: (error: unknown) => void;
   started: boolean;
   cancelled: boolean;
+  progress: ProgressUpdate & { updatedAt: string | null };
 };
 
 export class RunService {
@@ -35,7 +39,9 @@ export class RunService {
       let resolve!: (result: RunResult) => void;
       let reject!: (error: unknown) => void;
       const promise = new Promise<RunResult>((onSuccess, onFailure) => { resolve = onSuccess; reject = onFailure; });
-      const local: LocalRun = { controller: new AbortController(), started: false, cancelled: false, promise, resolve, reject };
+      const local: LocalRun = { controller: new AbortController(), started: false, cancelled: false, promise, resolve, reject,
+        progress: { phase: 'queued', available: true, currentCommand: null, completedCommands: 0,
+          totalCommands: 0, updatedAt: new Date().toISOString() } };
       this.local.set(admitted.runId, local);
       void promise.then(() => this.local.delete(admitted.runId), () => this.local.delete(admitted.runId));
       this.queue.push({ runId: admitted.runId, planId, local });
@@ -66,6 +72,21 @@ export class RunService {
     return result;
   }
 
+  progress(runId: string): RunProgress {
+    if (!z.uuid().safeParse(runId).success) throw new RunStoreError('invalid-input');
+    const result = this.store.getRun(runId);
+    if (!result) throw new RunStoreError('run-not-found');
+    const local = this.local.get(runId);
+    const progress = local && !result.finalized ? local.progress : null;
+    return { runId, state: result.state, finalized: result.finalized,
+      available: progress?.available ?? false,
+      phase: progress?.phase ?? (result.finalized ? 'finished' : 'unavailable'),
+      currentCommand: progress?.currentCommand ?? null,
+      completedCommands: progress?.completedCommands ?? 0,
+      totalCommands: progress?.totalCommands ?? 0,
+      updatedAt: progress?.updatedAt ?? null };
+  }
+
   async cancel(runId: string): Promise<RunResult> {
     if (!z.uuid().safeParse(runId).success) throw new RunStoreError('invalid-input');
     const local = this.local.get(runId);
@@ -88,6 +109,8 @@ export class RunService {
       return result;
     }
     local.cancelled = true;
+    local.progress = { ...local.progress, available: false, phase: 'unavailable', currentCommand: null,
+      updatedAt: new Date().toISOString() };
     local.controller.abort();
     return local.promise;
   }
@@ -101,10 +124,32 @@ export class RunService {
     if (local.cancelled) return this.store.finalizeRun(this.finish(initial, 'cancelled'));
     const plan = this.store.getPlan(planId);
     if (!plan || plan.plan.id !== planId || plan.project.id !== initial.projectId) throw new RunStoreError('plan-stale');
+    const source = projectSourceSchema.safeParse(plan.catalog.source);
+    const selectedIds = new Set(source.success ? source.data.checks
+      .filter((check) => plan.plan.plannedChecks.includes(check.id)).map((check) => check.commandId) : []);
+    const titles = new Map(source.success ? source.data.project.commands
+      .filter((command) => selectedIds.has(command.id)).map((command) => [command.id, command.title] as const) : []);
     const running = this.store.markRunning(runId);
+    local.progress = { ...local.progress, available: false, phase: 'unavailable', updatedAt: new Date().toISOString() };
     let candidate: RunResult | undefined;
     try {
-      candidate = await this.executor(structuredClone(plan), structuredClone(running), local.controller.signal);
+      candidate = await this.executor(structuredClone(plan), structuredClone(running), local.controller.signal, (progress) => {
+        if (local.cancelled || !['preparing', 'running', 'verifying', 'cleaning', 'unavailable'].includes(progress.phase)
+          || !Number.isSafeInteger(progress.completedCommands) || !Number.isSafeInteger(progress.totalCommands)
+          || progress.completedCommands < 0 || progress.totalCommands < progress.completedCommands
+          || progress.totalCommands !== titles.size
+          || typeof progress.available !== 'boolean'
+          || (progress.currentCommand !== null && (typeof progress.currentCommand?.id !== 'string'
+            || typeof progress.currentCommand?.title !== 'string' || !titles.has(progress.currentCommand.id)
+            || (progress.currentCommand.title !== titles.get(progress.currentCommand.id)
+              && progress.currentCommand.title !== '[가림]')))) return;
+        local.progress = { phase: progress.phase, available: progress.available,
+          currentCommand: progress.currentCommand ? { id: progress.currentCommand.id,
+            title: /[\\/]|authorization|cookie|bearer|token|password|secret|api[ _-]?key/iu.test(progress.currentCommand.title)
+              ? '[가림]' : progress.currentCommand.title } : null,
+          completedCommands: progress.completedCommands, totalCommands: progress.totalCommands,
+          updatedAt: new Date().toISOString() };
+      });
     } catch {
       // 실행기 오류의 세부 정보는 결과에 복사하지 않는다.
     }

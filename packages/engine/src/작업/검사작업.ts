@@ -21,11 +21,12 @@ export type CommandObservation = {
   kind: 'result'; commandId: string; outcome: ProcessOutcome & { cleanupVerified: boolean };
   stdout: string; evidence: EvidenceInput;
 };
+export type CommandStart = { kind: 'command-start'; commandId: string };
 
 const controller = new AbortController();
 process.once('disconnect', () => controller.abort());
 
-function send(value: CommandObservation): Promise<void> {
+function send(value: CommandObservation | CommandStart): Promise<void> {
   return new Promise((resolve, reject) => {
     if (!process.connected || !process.send) { reject(new Error('서비스 연결이 끊어졌습니다.')); return; }
     process.send(value, (error) => error ? reject(error) : resolve());
@@ -34,6 +35,8 @@ function send(value: CommandObservation): Promise<void> {
 
 async function run(config: WorkerConfig): Promise<void> {
   for (const [index, item] of config.commands.entries()) {
+    if (controller.signal.aborted) break;
+    await send({ kind: 'command-start', commandId: item.id });
     if (controller.signal.aborted) break;
     const environment: Record<string, string> = { ...item.env,
       CHECKMATE_RUN_ID: config.runId, CHECKMATE_EVIDENCE_DIR: config.evidenceRoot,
