@@ -151,6 +151,7 @@ Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 �
 
 | 문서 | 내용 |
 | --- | --- |
+| [상세 사용 설명서](https://github.com/yeunlee1/checkmate/blob/develop/문서/상세사용설명서.md) | 실제 화면으로 따라 하는 첫 검사, AI 연결, 결과 해석, CLI, 백업·복구와 문제 해결 |
 | [사용 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md) | 첫 실행, 결과 읽기, CLI·MCP, 백업과 복구 |
 | [검사 작성 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/검사작성안내.md) | 프로젝트 등록 원본, 리포터, 증거 연결 |
 | [검출력 사용법](https://github.com/yeunlee1/checkmate/blob/develop/문서/검출력사용법.md) | 실제 Stryker 실행과 변이 점수 해석 |
