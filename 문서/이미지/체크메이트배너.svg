@@ -1,0 +1,43 @@
+<!-- 체크메이트의 이름과 세 가지 사용 입구를 소개하는 리드미 배너. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title description">
+  <title id="title">CheckMate</title>
+  <desc id="description">사람과 AI가 함께 사용하는 로컬 E2E 검증 도구. 데스크톱 앱과 CLI, MCP를 제공한다.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#172438"/>
+      <stop offset="1" stop-color="#0b1322"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#72a8ff"/>
+      <stop offset="1" stop-color="#2b6df4"/>
+    </linearGradient>
+    <pattern id="board" width="104" height="104" patternUnits="userSpaceOnUse">
+      <rect width="52" height="52" fill="#fff" fill-opacity=".035"/>
+      <rect x="52" y="52" width="52" height="52" fill="#fff" fill-opacity=".035"/>
+    </pattern>
+  </defs>
+  <rect width="1200" height="340" rx="20" fill="url(#background)"/>
+  <rect x="784" y="0" width="416" height="340" rx="20" fill="url(#board)"/>
+  <path d="M0 339H1200" stroke="#2c4160"/>
+  <rect x="56" y="49" width="7" height="7" rx="2" fill="#79aaff"/>
+  <text x="76" y="58" fill="#a7b9d5" font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="600" letter-spacing="2.5">LOCAL SOFTWARE VERIFICATION</text>
+  <text x="51" y="156" fill="#f5f8ff" font-family="Segoe UI,Arial,sans-serif" font-size="80" font-weight="700" letter-spacing="-3">CheckMate<tspan fill="#72a8ff">.</tspan></text>
+  <text x="56" y="198" fill="#bac9df" font-family="Segoe UI,Arial,sans-serif" font-size="21">Evidence for every check.</text>
+  <g font-family="Segoe UI,Arial,sans-serif" font-size="12" font-weight="600" letter-spacing="1.3">
+    <rect x="56" y="253" width="115" height="34" rx="7" fill="#22334e" stroke="#344c70"/>
+    <text x="113.5" y="275" text-anchor="middle" fill="#dce8fc">DESKTOP</text>
+    <rect x="183" y="253" width="70" height="34" rx="7" fill="#22334e" stroke="#344c70"/>
+    <text x="218" y="275" text-anchor="middle" fill="#dce8fc">CLI</text>
+    <rect x="265" y="253" width="79" height="34" rx="7" fill="#22334e" stroke="#344c70"/>
+    <text x="304.5" y="275" text-anchor="middle" fill="#dce8fc">MCP</text>
+  </g>
+  <g transform="translate(884 58)">
+    <rect x="0" y="0" width="204" height="224" rx="26" fill="#14233b" stroke="#3c567c"/>
+    <path d="M102 39V70M87 54H117" fill="none" stroke="#dce9ff" stroke-width="9" stroke-linecap="round"/>
+    <path d="M65 79L79 124H125L139 79L117 90L102 74L87 90Z" fill="url(#accent)"/>
+    <path d="M81 137L74 163H130L123 137" fill="#dce9ff"/>
+    <path d="M64 177H140" stroke="#dce9ff" stroke-width="11" stroke-linecap="round"/>
+    <circle cx="179" cy="190" r="32" fill="#2b6df4" stroke="#14233b" stroke-width="7"/>
+    <path d="M166 189L175 198L193 179" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
