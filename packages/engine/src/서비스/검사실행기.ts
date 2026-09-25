@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { resultInputSchema, type RunResult } from '@checkmate/contracts';
 import { projectSourceSchema, type CheckDefinition, type ProjectSource } from '@checkmate/contracts/project';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
-import type { RunExecutor } from './실행서비스.js';
+import type { ProgressUpdate, RunExecutor } from './실행서비스.js';
 import { readProjectSource, fingerprintSource } from '../프로젝트/원본읽기.js';
 import { assertIncludedEntry, readCheckedFile } from '../프로젝트/소스지문.js';
 import { readAdapterEvents } from '../이벤트읽기.js';
@@ -35,6 +35,7 @@ const outcomeSchema = z.strictObject({
 });
 const observationSchema = z.strictObject({ kind: z.literal('result'), commandId: z.string(),
   outcome: outcomeSchema, stdout: z.string().max(256 * 1024), evidence: evidenceSchema });
+const commandStartSchema = z.strictObject({ kind: z.literal('command-start'), commandId: z.string() });
 const secretPattern = /authorization|cookie|bearer|token|password|secret|api[ _-]?key/iu;
 const uuid = z.uuid();
 type Options = { runsRoot: string; evidenceStore: EvidenceStore; eventStore: EventStore;
@@ -130,11 +131,18 @@ async function evidenceHasSecret(root: string, evidence: z.infer<typeof evidence
     || content.includes(Buffer.from(JSON.stringify(secret).slice(1, -1), 'utf8'))));
 }
 
-function runWorker(config: WorkerConfig, signal: AbortSignal): Promise<ObservedWorker> {
+function runWorker(config: WorkerConfig, signal: AbortSignal, titles: readonly string[],
+  onProgress?: (progress: ProgressUpdate) => void): Promise<ObservedWorker> {
   return new Promise((resolve) => {
     const entry = join(dirname(dirname(dirname(fileURLToPath(import.meta.url)))), 'dist', '작업', '검사작업.js');
     const observations: CommandObservation[] = [];
     let protocolValid = true;
+    let inFlight = false;
+    let completed = 0;
+    const emit = (phase: ProgressUpdate['phase'], currentCommand: ProgressUpdate['currentCommand'] = null,
+      available = true) => onProgress?.({ phase, available, currentCommand, completedCommands: completed,
+      totalCommands: config.commands.length });
+    const invalid = () => { protocolValid = false; emit('unavailable', null, false); };
     let exited: number | null = null;
     let sent = false;
     let child;
@@ -142,46 +150,72 @@ function runWorker(config: WorkerConfig, signal: AbortSignal): Promise<ObservedW
       child = fork(entry, [], { cwd: config.sourceRoot, execPath: process.execPath, execArgv: [],
         env: Object.fromEntries(['SystemRoot', 'WINDIR'].flatMap((key) => process.env[key] ? [[key, process.env[key]!]] : [])),
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true });
-    } catch { resolve({ exitCode: null, observations, protocolValid: false }); return; }
+    } catch { invalid(); resolve({ exitCode: null, observations, protocolValid: false }); return; }
     const childProcess = child;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     const abort = () => {
       if (stopped) return;
       stopped = true;
+      emit('unavailable', null, false);
       if (childProcess.connected) childProcess.send({ kind: 'cancel' }, () => {});
-      killTimer = setTimeout(() => { protocolValid = false; childProcess.kill(); }, 15_000);
+      killTimer = setTimeout(() => { invalid(); childProcess.kill(); }, 15_000);
     };
     signal.addEventListener('abort', abort, { once: true });
     const maximum = Math.min(86_400_000, config.commands.reduce((sum, item) => sum + item.timeoutMs + 30_000, 30_000));
     const watchdog = setTimeout(abort, maximum);
     childProcess.on('message', (value: unknown) => {
-      if (Buffer.byteLength(JSON.stringify(value), 'utf8') > 512 * 1024) { protocolValid = false; return; }
+      // 취소 뒤에도 실행 중이던 명령의 종료와 정리 근거는 수집한다.
+      if (!protocolValid) return;
+      let size: number;
+      try { size = Buffer.byteLength(JSON.stringify(value), 'utf8'); }
+      catch { invalid(); return; }
+      if (size > 512 * 1024) { invalid(); return; }
+      const started = commandStartSchema.safeParse(value);
+      if (started.success) {
+        const expected = config.commands[observations.length];
+        if (inFlight || stopped || !expected || started.data.commandId !== expected.id
+          || (observations.length > 0 && (observations.at(-1)?.outcome.status !== 'exited'
+            || !observations.at(-1)?.outcome.cleanupVerified))) { invalid(); return; }
+        inFlight = true;
+        const title = titles[observations.length] ?? '';
+        const hidden = hideSecrets(title, config.resourceSecrets ?? []);
+        emit('running', { id: expected.id,
+          title: hidden !== title || secretPattern.test(hidden) || /[\\/]/u.test(hidden) ? '[가림]' : hidden });
+        return;
+      }
       const parsed = observationSchema.safeParse(value);
       const expected = config.commands[observations.length];
-      if (!parsed.success || !expected || parsed.data.commandId !== expected.id) { protocolValid = false; return; }
+      if (!inFlight || !parsed.success || !expected || parsed.data.commandId !== expected.id) { invalid(); return; }
+      inFlight = false;
       observations.push({ ...parsed.data, stdout: parsed.data.stdout && expected.resultFormat === 'ndjson'
         ? hideSecretsInNdjson(parsed.data.stdout, config.resourceSecrets ?? []) : '' });
+      if (!parsed.data.outcome.terminationConfirmed || !parsed.data.outcome.cleanupVerified) {
+        invalid(); return;
+      }
+      completed += 1;
+      if (!stopped) emit(observations.length === config.commands.length ? 'verifying' : 'running');
     });
-    childProcess.once('error', () => { protocolValid = false; });
+    childProcess.once('error', invalid);
     childProcess.once('exit', (code) => { exited = code; });
     childProcess.once('close', () => {
+      if (inFlight || observations.length !== config.commands.length || !protocolValid) invalid();
       signal.removeEventListener('abort', abort);
       clearTimeout(watchdog);
       clearTimeout(killTimer);
       resolve({ exitCode: exited, observations, protocolValid });
     });
     if (Buffer.byteLength(JSON.stringify(config), 'utf8') > 1024 * 1024) {
-      protocolValid = false;
+      invalid();
       childProcess.kill();
     } else {
       try {
-        childProcess.send(config, (error) => { if (error) protocolValid = false; });
+        childProcess.send(config, (error) => { if (error) invalid(); });
         sent = true;
         if (signal.aborted) abort();
-      } catch { protocolValid = false; childProcess.kill(); }
+      } catch { invalid(); childProcess.kill(); }
     }
-    if (!sent) protocolValid = false;
+    if (!sent) invalid();
   });
 }
 
@@ -193,7 +227,7 @@ function caseFor(check: CheckDefinition, status: RunResult['cases'][number]['sta
 }
 
 export function createProjectExecutor(options: Options): RunExecutor {
-  return async (plan, initial, signal) => {
+  return async (plan, initial, signal, onProgress) => {
     if (!resultInputSchema.safeParse(initial).success || initial.state !== 'running'
       || plan.project.id !== initial.projectId
       || plan.plan.fingerprint !== initial.planHash || plan.plan.sourceHash !== initial.sourceBefore)
@@ -211,6 +245,10 @@ export function createProjectExecutor(options: Options): RunExecutor {
     let fixed;
     try { fixed = await fixedCommands(snapshot.realPath, parsed.data, plan); }
     catch { return { ...candidate, state: 'blocked' }; }
+    const titles = fixed.commands.map((command) => parsed.data.project.commands.find((item) => item.id === command.id)!.title);
+    const emit = (progress: ProgressUpdate) => onProgress?.(progress);
+    emit({ phase: 'preparing', available: true, currentCommand: null,
+      completedCommands: 0, totalCommands: fixed.commands.length });
     const ownerToken = randomBytes(32).toString('hex');
     let evidenceRoot;
     try { evidenceRoot = await makeRunRoot(options.runsRoot, initial.runId, ownerToken); }
@@ -231,11 +269,14 @@ export function createProjectExecutor(options: Options): RunExecutor {
         config.resourceSecrets = resource.secrets;
         prepared = true;
       }
-      if (!signal.aborted) { workerAttempted = true; observed = await runWorker(config, signal); }
+      if (!signal.aborted) { workerAttempted = true; observed = await runWorker(config, signal, titles, emit); }
     } catch {
       // 준비 중 일부 자원이 생성됐을 수 있으므로 finally에서 정리한다.
     } finally {
       if (needsResource) {
+        emit({ phase: 'cleaning', available: !signal.aborted && observed?.protocolValid === true, currentCommand: null,
+          completedCommands: observed?.observations.filter((item) => item.outcome.terminationConfirmed
+            && item.outcome.cleanupVerified).length ?? 0, totalCommands: fixed.commands.length });
         try {
           const cleanup = await options.resources!.cleanup(initial.runId);
           resourceCleaned = cleanup.verified;

@@ -13,6 +13,7 @@ export const apiInputs = {
   approve: z.strictObject({ planId: uuid, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
   start: z.strictObject({ projectId: uuid, planId: uuid }),
   status: z.strictObject({ runId: uuid }),
+  progress: z.strictObject({ runId: uuid }),
   result: z.strictObject({ runId: uuid, section: z.enum(['summary', 'cases', 'requirements', 'gaps', 'repair-bundle', 'imported']).default('summary'), ...pagination }),
   evidence: z.strictObject({ runId: uuid, evidenceId: uuid, cursor: z.string().max(4096).optional(), limit: z.number().int().min(1024).max(32768).optional(), content: z.boolean().default(false) }),
   'evidence-image': z.strictObject({ runId: uuid, evidenceId: uuid, cursor: z.string().max(4096).optional() }),

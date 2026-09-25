@@ -125,6 +125,10 @@ export class ProductService {
         const input = apiInputs.status.parse(raw);
         return resultSummary(this.requireRun(input.runId));
       }
+      case 'progress': {
+        const input = apiInputs.progress.parse(raw);
+        return this.execution.progress(input.runId);
+      }
       case 'result': {
         const input = apiInputs.result.parse(raw);
         const result = this.requireRun(input.runId);
