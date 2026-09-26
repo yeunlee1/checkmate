@@ -241,9 +241,9 @@ test('저장 루트의 링크는 거절하고 Windows 짧은 경로는 실제 �
   await symlink(runsRoot, link, process.platform === 'win32' ? 'junction' : 'dir');
   expect(() => new EvidenceStore(db, join(link, 'nested'))).toThrowError(EvidenceStoreError);
   if (process.platform === 'win32') {
-    const short = execFileSync('cmd.exe', ['/d', '/c',
+    const short = execFileSync('cmd.exe', ['/d', '/u', '/c',
       'for %I in (%CHECKMATE_TEST_ROOT%) do @echo %~sI'],
-    { env: { ...process.env, CHECKMATE_TEST_ROOT: runsRoot }, encoding: 'utf8' }).trim();
+    { env: { ...process.env, CHECKMATE_TEST_ROOT: runsRoot }, encoding: 'utf16le', windowsHide: true }).trim();
     expect(new EvidenceStore(db, short).list(randomUUID())).toEqual([]);
   }
 });
