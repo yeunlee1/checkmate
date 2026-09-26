@@ -27,15 +27,31 @@ export function boundedPage<T>(items: readonly T[], scope: string, cursor?: stri
   return output();
 }
 
+function compactCaseWithLimit(item: RunResult['cases'][number], observedLimit: number) {
+  const expected = item.expected;
+  const observed = item.observed;
+  return { ...item, expected: expected?.slice(0, 384) ?? null, observed: observed?.slice(0, observedLimit) ?? null,
+    evidenceIds: item.evidenceIds.slice(0, 10), truncated: (expected?.length ?? 0) > 384 || (observed?.length ?? 0) > observedLimit || item.evidenceIds.length > 10 };
+}
+
 export function compactCase(item: RunResult['cases'][number]) {
-  return { ...item, expected: item.expected?.slice(0, 384) ?? null, observed: item.observed?.slice(0, 384) ?? null,
-    evidenceIds: item.evidenceIds.slice(0, 10), truncated: (item.expected?.length ?? 0) > 384 || (item.observed?.length ?? 0) > 384 || item.evidenceIds.length > 10 };
+  return compactCaseWithLimit(item, 384);
+}
+
+export function compactRepairCase(item: RunResult['cases'][number]) {
+  return compactCaseWithLimit(item, 1024);
+}
+
+export function failurePriority(item: Pick<RunResult['cases'][number], 'status' | 'failureOrigin'>): number {
+  if (item.status !== 'failed') return 3;
+  return item.failureOrigin === 'check' ? 0 : item.failureOrigin === 'command' ? 2 : 1;
 }
 
 export function resultSummary(result: RunResult, integrity: 'verified' | 'degraded' | 'pending' = 'pending') {
   const statuses: Record<string, number> = {};
   for (const item of result.cases) statuses[item.status] = (statuses[item.status] ?? 0) + 1;
-  const failures = result.cases.filter((item) => item.status !== 'passed');
+  const failures = result.cases.filter((item) => item.status !== 'passed')
+    .sort((left, right) => failurePriority(left) - failurePriority(right));
   const summary = { runId: result.runId, projectId: result.projectId, profile: result.profile, origin: result.origin,
     state: result.state, verdict: result.verdict, effectiveVerdict: integrity === 'degraded' && result.verdict === 'passed' ? 'unknown' : result.verdict,
     finalized: result.finalized, integrity, reusablePassed: result.verdict === 'passed' && integrity === 'verified',
