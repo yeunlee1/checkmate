@@ -132,3 +132,32 @@ it('진행 중에는 백업을 막고 취소가 끝나면 저장소를 다시 �
     .toMatchObject({ ok: false, error: { code: 'maintenance-busy' } });
   await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'cancel', input: { runId } }, 'human');
 }, 30000);
+
+it('서로 다른 자료의 정상 응답을 CLI와 MCP의 실제 연결 경로로 구별한다', async () => {
+  const first = await fixture();
+  const second = await fixture();
+  for (const f of [first, second]) await f.command('register', f.root, '--trust');
+  const connections = [];
+  for (const f of [first, second]) {
+    const queried = await f.command('capabilities');
+    expect(queried.code).toBe(0);
+    expect(queried.response.ok).toBe(true);
+    expect(queried.response.data.connection).toEqual({ dataRoot: resolve(f.dataRoot) });
+    const client = new Client({ name: 'checkmate-connection-test', version: '1.0.0' });
+    const transport = new StdioClientTransport({ command: process.execPath, args: [cli, '--data-dir', f.dataRoot, 'mcp'], stderr: 'pipe' });
+    cleanup.push(async () => { await client.close(); await transport.close(); });
+    await client.connect(transport);
+    const result = await client.callTool({ name: 'get_capabilities', arguments: {} });
+    expect(result.isError).toBe(false);
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(8192);
+    const content = result.content as { type: string; text: string }[];
+    const response = JSON.parse(content[0]!.text);
+    expect(response.ok).toBe(true);
+    expect(response.data.connection).toEqual(queried.response.data.connection);
+    const listed = await client.callTool({ name: 'list_projects', arguments: {} });
+    const projects = JSON.parse((listed.content as { text: string }[])[0]!.text);
+    expect(projects).toMatchObject({ ok: true, data: { total: 1, items: [{ id: f.projectId }] } });
+    connections.push(response.data.connection.dataRoot);
+  }
+  expect(connections[0]).not.toBe(connections[1]);
+}, 30000);
