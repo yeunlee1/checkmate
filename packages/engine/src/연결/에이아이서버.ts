@@ -8,7 +8,7 @@ import type { ApiMethod, ApiRequest, ApiResponse } from '@checkmate/contracts/ap
 
 export type AgentInvoker = (request: ApiRequest) => Promise<ApiResponse>;
 const toolDefinitions = [
-  ['get_capabilities', 'capabilities', '연결된 서비스의 자료 폴더와 사용 가능한 검사 기능 및 현재 준비 상태를 조회합니다.'],
+  ['get_capabilities', 'capabilities', '연결된 서비스의 자료 폴더와 사용 가능한 검사 기능 및 현재 준비 상태를 조회합니다. clientCompatibility가 limited이면 missingFeatures와 nextAction을 확인하세요.'],
   ['list_projects', 'projects', '사람이 등록한 프로젝트를 조회합니다.'],
   ['list_checks', 'checks', '프로젝트의 활성 검사와 요구사항 연결을 조회합니다.'],
   ['inspect_project', 'inspect', '현재 소스와 검사 정의로 계획과 필요한 승인을 확인합니다.'],

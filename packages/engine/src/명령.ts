@@ -51,7 +51,7 @@ const clientOptions = () => program.opts().dataDir === undefined ? {} : { dataRo
 function exitForError(code: string): number {
   if (['invalid-input', 'invalid-project'].includes(code)) return 2;
   if (['needs-approval', 'needs-initialization', 'human-action-required'].includes(code)) return 3;
-  if (code === 'unsupported-version') return 6;
+  if (['unsupported-version', 'service-update-required'].includes(code)) return 6;
   if (['plan-stale', 'catalog-stale', 'request-conflict', 'workspace-busy', 'project-conflict'].includes(code)) return 7;
   return 5;
 }
