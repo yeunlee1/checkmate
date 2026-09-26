@@ -1,6 +1,5 @@
 // 실행 결과를 작은 요약과 범위에 묶인 상세 페이지로 나눈다.
 import { createHash } from 'node:crypto';
-import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { ServiceError } from '@checkmate/contracts/api';
 import type { RunResult } from '@checkmate/contracts';
@@ -29,8 +28,8 @@ export function boundedPage<T>(items: readonly T[], scope: string, cursor?: stri
 }
 
 function compactCaseWithLimit(item: RunResult['cases'][number], observedLimit: number) {
-  const expected = item.expected === null ? null : stripVTControlCharacters(item.expected);
-  const observed = item.observed === null ? null : stripVTControlCharacters(item.observed);
+  const expected = item.expected;
+  const observed = item.observed;
   return { ...item, expected: expected?.slice(0, 384) ?? null, observed: observed?.slice(0, observedLimit) ?? null,
     evidenceIds: item.evidenceIds.slice(0, 10), truncated: (expected?.length ?? 0) > 384 || (observed?.length ?? 0) > observedLimit || item.evidenceIds.length > 10 };
 }
@@ -40,8 +39,7 @@ export function compactCase(item: RunResult['cases'][number]) {
 }
 
 export function compactRepairCase(item: RunResult['cases'][number]) {
-  const expanded = compactCaseWithLimit(item, 1024);
-  return Buffer.byteLength(JSON.stringify(expanded), 'utf8') <= 3500 ? expanded : compactCase(item);
+  return compactCaseWithLimit(item, 1024);
 }
 
 export function failurePriority(item: Pick<RunResult['cases'][number], 'status' | 'failureOrigin'>): number {

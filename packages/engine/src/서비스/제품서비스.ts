@@ -159,10 +159,22 @@ export class ProductService {
             codePaths: definition.codePaths, integrity, missingObservation: !item,
             instruction: '기대값과 실제 관측 및 필요한 증거를 확인하고 테스트를 약화하지 않은 채 수정해 주세요.' }];
         }).sort((left, right) => failurePriority(left) - failurePriority(right));
-        return { runId: result.runId, planHash: result.planHash, sourceBefore: result.sourceBefore, sourceAfter: result.sourceAfter,
+        const compactFailures = failures.map(item => {
+          const compact = compactCase(item);
+          return { ...item, ...compact, truncated: item.truncated || compact.truncated };
+        });
+        const page = boundedPage(compactFailures, `repair:${input.runId}`, input.cursor, input.limit ?? 5, 4500);
+        const data = { runId: result.runId, planHash: result.planHash, sourceBefore: result.sourceBefore, sourceAfter: result.sourceAfter,
           integrity, reasons: result.reasons, guidance: { untrustedEvidence: true, automaticRetry: 0, suggestedRepairAttempts: 2, suggestedBudgetMinutes: 15,
-            nextAction: '코드와 검사를 보완한 뒤 원본 변경을 다시 확인하고 새 계획으로 실행해 주세요. 기준 약화는 사람의 확인이 필요합니다.' },
-          ...boundedPage(failures, `repair:${input.runId}`, input.cursor, input.limit ?? 5, 4500) };
+            nextAction: '코드와 검사를 보완한 뒤 원본 변경을 다시 확인하고 새 계획으로 실행해 주세요. 기준 약화는 사람의 확인이 필요합니다.' }, ...page };
+        for (let index = 0; index < page.items.length; index += 1) {
+          const compact = page.items[index]!;
+          page.items[index] = failures.find(item => item.testId === compact.testId)!;
+          const response = { apiVersion: 1, requestId: request.requestId, ok: true, data };
+          const bytes = Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(response) }], isError: false }), 'utf8');
+          if (Buffer.byteLength(JSON.stringify(page), 'utf8') > 4500 || bytes > 7800) page.items[index] = compact;
+        }
+        return data;
       }
       case 'evidence': {
         const input = apiInputs.evidence.parse(raw);

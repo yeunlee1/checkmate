@@ -5,7 +5,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { resultInputSchema, type RunResult } from '@checkmate/contracts';
 import { projectSourceSchema, type CheckDefinition, type ProjectSource } from '@checkmate/contracts/project';
@@ -44,7 +44,7 @@ type ObservedWorker = { exitCode: number | null; observations: CommandObservatio
 
 function scrub(value: unknown, secrets: readonly string[] = []): unknown {
   if (typeof value === 'string') {
-    const hidden = hideSecrets(value, secrets);
+    const hidden = hideSecrets(stripVTControlCharacters(value), secrets);
     return secretPattern.test(hidden) ? '[가림]' : hidden;
   }
   if (Array.isArray(value)) return value.map((item) => scrub(item, secrets));

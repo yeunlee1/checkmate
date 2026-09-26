@@ -3,6 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createAgentServer } from '../packages/engine/src/연결/에이아이서버.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { readProjectSource } from '../packages/engine/src/프로젝트/원본읽기.js';
@@ -70,7 +73,7 @@ process.exit(mode === 'exit-fail' || mode === 'ndjson-fail' || mode === 'ndjson-
 `;
 
 async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, directory: string) => Promise<{
-  path: string; cleanup?: () => Promise<void> }>) {
+  path: string; cleanup?: () => Promise<void> }>, repairBudget = false) {
   const fixture = await createStoreFixture();
   const sourceRoot = join(fixture.directory, '합성프로젝트');
   const runsRoot = join(fixture.directory, '실행');
@@ -93,15 +96,16 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
       profiles: [{ id: 'quick', title: '빠른 검사', checkIds }] },
     requirements: [{ id: 'req-1', title: '요구사항', description: '합성 검사 결과' }],
     checks: [{ id: 'check-1', title: '검사', requirementId: 'req-1', commandId: 'run',
-      required: true, kind: 'logic', expected: '성공', codePaths: [] },
+      required: true, kind: 'logic', expected: '성공', codePaths: [] as string[] },
     ...(second ? [{ id: 'check-2', title: '두 번째 검사', requirementId: 'req-1', commandId: 'other-run',
-      required: true, kind: 'logic', expected: '성공', codePaths: [] }] : [])],
+      required: true, kind: 'logic', expected: '성공', codePaths: [] as string[] }] : [])],
   };
-  if (mode === 'ndjson-many-fail') source.checks = checkIds.map(id => ({ ...source.checks[0]!, id }));
+  if (mode === 'ndjson-many-fail') source.checks = checkIds.map(id => ({ ...source.checks[0]!, id,
+    codePaths: (repairBudget ? Array.from({ length: 40 }, (_, index) => `src/${'가'.repeat(12)}${index}.ts`) : []) }));
   await writeFile(join(sourceRoot, 'checkmate', '프로젝트.json'), JSON.stringify(source.project));
   await writeFile(join(sourceRoot, 'checkmate', '요구사항.json'), JSON.stringify(source.requirements));
   await writeFile(join(sourceRoot, 'checkmate', '검사항목.json'), JSON.stringify(source.checks));
-  await writeFile(join(sourceRoot, 'tests', 'run.mjs'), script);
+  await writeFile(join(sourceRoot, 'tests', 'run.mjs'), repairBudget ? script.replace('체크박스 선택 상태가 바뀌지 않았습니다.', '가'.repeat(1000)) : script);
   await writeFile(join(sourceRoot, 'source.txt'), '원본');
   const snapshot = await readProjectSource(sourceRoot);
   if (mode === 'prechange') await writeFile(join(sourceRoot, 'source.txt'), '사전 변경');
@@ -142,7 +146,39 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
       apiVersion: 1, requestId: randomUUID(), method: 'result',
       input: { runId: started.runId, section: 'repair-bundle' },
     }, 'agent') : null;
-    return { result, repair, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
+    const repairPages: Array<{ items: Array<{ testId: string; observed: string; truncated: boolean }>; nextCursor: string | null; total: number }> = [];
+    if (repairBudget) {
+      const product = new ProductService(db, evidence, async () => result);
+      const server = createAgentServer(request => product.handle(request, 'agent'));
+      const client = new Client({ name: 'repair-budget-test', version: '1.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      try {
+        for (const limit of [1, 5]) {
+          let cursor: string | undefined;
+          const ids: string[] = [];
+          do {
+            const response = await client.callTool({ name: 'get_run_result', arguments: {
+              runId: started.runId, section: 'repair-bundle', limit, ...(cursor ? { cursor } : {}),
+            } });
+            expect(response.isError).toBe(false);
+            expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(8192);
+            const content = response.content as Array<{ type: string; text: string }>;
+            const parsed = JSON.parse(content[0]!.text) as { ok: boolean; data: typeof repairPages[number] };
+            expect(parsed.ok).toBe(true);
+            repairPages.push(parsed.data);
+            ids.push(...parsed.data.items.map(item => item.testId));
+            cursor = parsed.data.nextCursor ?? undefined;
+            expect(repairPages.length).toBeLessThanOrEqual(26);
+          } while (cursor);
+          expect(ids[0]).toBe('check-11');
+          expect(ids).toHaveLength(13);
+          expect(new Set(ids)).toEqual(new Set(checkIds));
+        }
+      } finally { await client.close(); await server.close(); }
+    }
+    return { result, repair, repairPages, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
   } finally {
     db.close();
     await cleanupAlias?.();
@@ -151,6 +187,11 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
 }
 
 describe('고정 계획 검사실행기', () => {
+  it('긴 한글 진단과 코드 경로가 있어도 실제 MCP의 모든 수정 페이지를 빠짐없이 조회한다', async () => {
+    const { repairPages } = await scenario('ndjson-many-fail', undefined, true);
+    expect(repairPages[0]!.items[0]).toMatchObject({ testId: 'check-11', truncated: true, observed: '가'.repeat(384) });
+  });
+
   it('명령 영향 실패 열 개 뒤의 직접 실패를 요약에서 먼저 보여주고 어댑터의 출처 주장을 덮어쓴다', async () => {
     const { result, repair } = await scenario('ndjson-many-fail');
     expect(result).toMatchObject({ verdict: 'failed', workerExitCode: 0, finalized: true });

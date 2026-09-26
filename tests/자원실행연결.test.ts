@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { readProjectSource } from '../packages/engine/src/프로젝트/원본읽기.js';
 import { createProjectExecutor } from '../packages/engine/src/서비스/검사실행기.js';
+import { resultSummary, compactRepairCase } from '../packages/engine/src/서비스/조회결과.js';
 import { RunService } from '../packages/engine/src/서비스/실행서비스.js';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
@@ -54,11 +55,12 @@ if (mode === 'text' || mode === 'binary') {
 }
 if (mode === 'claim') process.stdout.write(event(1, 'resource-created', { kind: 'postgres-test' }) + '\n');
 process.stdout.write(event(mode === 'text' || mode === 'binary' || mode === 'claim' ? 2 : 1, 'case-result', {
-  testId: id, status: 'passed', requirementId: 'req', expected: '성공',
-  observed: mode === 'output' ? value : '성공', evidenceIds, severity: 'info', location: null }) + '\n');
+  testId: id, status: 'passed', requirementId: 'req',
+  expected: mode === 'ansi-output' ? new URL(value).password.slice(0, 5) + '\u001b[31m' + new URL(value).password.slice(5) + '\u001b[0m' : '성공',
+  observed: mode === 'ansi-output' ? 'Authoriza\u001b[31mtion: safevalue\u001b[0m' : mode === 'output' ? value : '성공', evidenceIds, severity: 'info', location: null }) + '\n');
 `;
 
-type Mode = 'normal' | 'output' | 'text' | 'binary' | 'claim' | 'cancel';
+type Mode = 'normal' | 'ansi-output' | 'output' | 'text' | 'binary' | 'claim' | 'cancel';
 async function scenario(mode: Mode, options: { declared?: boolean; second?: boolean;
   prepareFails?: boolean; cleanupVerified?: boolean; cancel?: boolean; noResources?: boolean;
   workerCrash?: boolean } = {}) {
@@ -119,6 +121,15 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
 }
 
 describe('부모 소유 자원 실행 연결', () => {
+  it('ANSI로 나눈 합성 비밀과 인증 표지를 정규화한 뒤 가리고 조회에서 되살리지 않는다', async () => {
+    const { result, events } = await scenario('ansi-output', { declared: true });
+    expect(result.verdict).toBe('passed');
+    expect(result.cases[0]).toMatchObject({ expected: '[가림]', observed: '[가림]' });
+    const outputs = { result, events, summary: resultSummary(result), repair: result.cases.map(compactRepairCase) };
+    expect(JSON.stringify(outputs)).not.toContain(secret);
+    expect(JSON.stringify(outputs)).not.toContain('safevalue');
+  });
+
   it('선언한 명령에만 환경을 주고 한 실행에 한 번 준비 및 정리한다.', async () => {
     const { result, prepare, cleanup } = await scenario('normal', { declared: true, second: true });
     expect(result.verdict).toBe('passed');

@@ -93,17 +93,15 @@ it('최대 식별자와 이유 및 JSON escape가 많아도 실제 MCP 조회가
   }
 });
 
-it('수정 묶음은 ANSI를 제거한 긴 진단을 제공하고 원본과 구버전 출처를 바꾸지 않는다', () => {
+it('수정 묶음은 긴 진단을 제공하되 과거 ANSI 문자열과 출처를 바꾸지 않는다', () => {
   const observed = '\u001b[31m' + 'safe diagnostic '.repeat(60) + '\u001b[0m';
   const item = { ...completeResult().cases[0]!, status: 'failed' as const, observed };
-  const summary = compactCase(item);
-  const repair = compactRepairCase(item);
-  expect(summary.observed).toHaveLength(384);
-  expect(repair.observed).toBe('safe diagnostic '.repeat(60));
-  expect(repair.truncated).toBe(false);
-  expect(repair).not.toHaveProperty('failureOrigin');
+  expect(compactCase(item).observed).toHaveLength(384);
+  expect(compactRepairCase(item).observed).toBe(observed);
+  expect(compactRepairCase(item).truncated).toBe(false);
+  expect(compactRepairCase(item)).not.toHaveProperty('failureOrigin');
   expect(item.observed).toBe(observed);
-  const long = compactRepairCase({ ...item, observed: '긴진단'.repeat(2000), expected: '긴기대'.repeat(2000) });
+  const long = compactRepairCase({ ...item, observed: '긴진단'.repeat(2000) });
   expect(long.truncated).toBe(true);
-  expect(long.observed!.length).toBe(384);
+  expect(long.observed!.length).toBe(1024);
 });
