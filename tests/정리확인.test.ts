@@ -72,7 +72,7 @@ test('수동 확인은 원래 판정을 보존하고 해당 실행의 작업 폴
   const secondRunId = await start(secondProject);
   expect(await product.execution.wait(firstRunId)).toMatchObject({ state: 'unverifiable', verdict: 'unknown', cleanupVerified: null });
   expect(await product.execution.wait(secondRunId)).toMatchObject({ state: 'unverifiable', verdict: 'unknown', cleanupVerified: null });
-  expect(await call('start', firstProject)).toMatchObject({ ok: false, error: { code: 'ownership-unknown' } });
+  expect(await call('start', firstProject)).toMatchObject({ ok: false, error: { code: 'ownership-unknown', message: expect.stringContaining(firstRunId) } });
   const input = { runId: firstRunId, confirm: true, note: '합성 실행 자원을 수동으로 확인했다.' };
   expect(await call('acknowledge-cleanup', input, 'agent')).toMatchObject({ ok: false, error: { code: 'human-action-required' } });
   expect(await call('acknowledge-cleanup', input)).toMatchObject({ ok: true,
@@ -89,7 +89,7 @@ test('수동 확인은 원래 판정을 보존하고 해당 실행의 작업 폴
   expect(JSON.parse(row.detail_json)).toMatchObject({ note: input.note, manualConfirmation: true });
   expect(db.prepare("SELECT count(*) AS count FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged'").get(firstRunId))
     .toEqual({ count: 1 });
-  expect(await call('start', secondProject)).toMatchObject({ ok: false, error: { code: 'ownership-unknown' } });
+  expect(await call('start', secondProject)).toMatchObject({ ok: false, error: { code: 'ownership-unknown', message: expect.stringContaining(secondRunId) } });
   mode = 'hold';
   const nextRunId = await start(firstProject);
   expect(await call('acknowledge-cleanup', input)).toMatchObject({ ok: false, error: { code: 'workspace-busy' } });
