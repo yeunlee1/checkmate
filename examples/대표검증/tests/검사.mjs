@@ -38,6 +38,15 @@ try {
   result('workflow', saved === '합성 주문' ? 'passed' : 'failed', '저장 후 재조회 값은 합성 주문',
     `재조회 값 ${saved}`, [workflowEvidence.id], saved === '합성 주문' ? null : { file: '가상앱.mjs', line: 21 });
 
+  if (process.env.CHECKMATE_TEST_OBSERVATION_FAILURE === '1') {
+    await page.evaluate(() => {
+      Object.defineProperty(Element.prototype, 'outerHTML', { configurable: true,
+        get() { throw new Error('합성 DOM 관측 실패'); } });
+      Object.defineProperty(window, 'innerWidth', { configurable: true,
+        get() { throw new Error('합성 화면 관측 실패'); } });
+    });
+  }
+
   const roleResponse = await page.request.get(`${base}/api/role`);
   const roleBody = await roleResponse.text();
   const exposure = await checkRoleExposure(page, { ruleId: 'viewer-marker', role: 'viewer',
@@ -45,9 +54,9 @@ try {
     sources: ['dom', 'api'] }, [{ status: roleResponse.status(), body: roleBody }]);
   const exposureEvidence = await reporter.evidence({ relativePath: '역할노출.json',
     content: JSON.stringify(exposure), mime: 'application/json' });
-  result('exposure', exposure.status === 'passed' ? 'passed' : 'failed', 'viewer 응답에 관리자 표식 없음',
+  result('exposure', exposure.status === 'unverified' ? 'unknown' : exposure.status, 'viewer 응답에 관리자 표식 없음',
     `상태 ${exposure.status}, 금지 표식 위치 ${exposure.findings.filter(f=>f.permission==='forbidden'&&f.count>0).map(f=>`${f.source}:${f.locations.map(p=>p.offset).join(',')}`).join(';') || '없음'}`,
-    [exposureEvidence.id], exposure.status === 'passed' ? null : { file: '가상앱.mjs', line: 27 });
+    [exposureEvidence.id], exposure.status === 'failed' ? { file: '가상앱.mjs', line: 27 } : null);
 
   const design = await checkBrowserDesign(page, [{ id: 'decor-in-viewport', selector: '#decor',
     visible: true, fitViewport: true }]);
@@ -58,9 +67,9 @@ try {
       screenshotEvidenceId: screenshot.id, viewport: design.findings[0]?.viewport ?? null,
       status: design.status, findings: design.findings }),
     mime: 'application/json', sensitivity: 'public', synthetic: true });
-  result('design', design.status === 'passed' ? 'passed' : 'failed', '합성 표시가 400x300 화면 안에 있음',
+  result('design', design.status === 'unverified' ? 'unknown' : design.status, '합성 표시가 400x300 화면 안에 있음',
     `상태 ${design.status}, 위치 ${JSON.stringify(design.findings[0]?.boundingBox)}, 화면 ${JSON.stringify(design.findings[0]?.viewport)}`,
-    [designEvidence.id, screenshot.id], design.status === 'passed' ? null : { file: '가상앱.mjs', line: 39 });
+    [designEvidence.id, screenshot.id], design.status === 'failed' ? { file: '가상앱.mjs', line: 39 } : null);
 
   const accessibility = await checkAccessibility(page);
   const accessibilityEvidence = await reporter.evidence({ relativePath: '접근성.json',

@@ -473,7 +473,7 @@ npm run desktop:dev
 <p><strong>검사 결과 → 결함 화면 위치</strong>에서 화면 밖 요소의 근거를 살펴볼 수 있습니다. 공개 PNG 증거에서는 <strong>캡처 보기</strong>를 사용합니다. 연결된 디자인 JSON은 먼저 <strong>안전한 텍스트 보기</strong>를 누르고, 남은 구간이 있으면 <strong>본문 더 보기</strong>로 끝까지 읽습니다. 그다음 표시되는 <strong>캡처에서 위반 위치 보기</strong>를 누릅니다. 좌표를 확인하지 못했다면 위치를 추정해서 그리지 않습니다.</p>
 <p>다음으로 <strong>AI 수정 자료</strong> 탭을 엽니다. 실패 내용, 누락, 코드 위치와 증거 ID를 읽는 곳입니다. 복사 결과가 일부 구간이면 더 보기와 전체 개수를 확인합니다.</p>
 <p>이 예제의 기대값을 잘못된 값에 맞춰 바꾸거나 실패 검사를 삭제하지 마세요. 실제 프로젝트의 수정 흐름은 <a href="#changes">9장</a>과 <a href="#ai-workflow">14장</a>을 따릅니다.</p>
-<p><strong>현재 대표 예제의 한계.</strong> 역할 정보 노출과 화면 위치 검사는 브라우저 관측에 실패한 <code>unverified</code>도 <code>failed</code>로 기록하는 분기가 있습니다. 해당 검사에서 관측 내용이 <code>unverified</code>라면 실제 결함을 찾았다고 단정하지 말고 브라우저와 증거 수집 오류부터 확인하세요. 새 검사 코드에서는 관측 불가를 결과 계약의 <code>unknown</code>으로 전달해야 합니다. 이 설명서의 정상·결함 캡처는 관측이 완료된 실행입니다.</p>
+<p><strong>관측에 실패한 경우.</strong> 대표 예제의 역할 정보 노출과 화면 위치 검사는 브라우저 관측 결과가 <code>unverified</code>이면 사례 상태를 <code>unknown</code>으로 기록합니다. 이 경우 실제 결함을 찾았다고 단정하지 말고 브라우저와 증거 수집 오류부터 확인하세요. 필수 검사가 확인 불가이면 전체 결과도 통과하지 않습니다. 이 설명서의 정상·결함 캡처는 관측이 완료된 실행입니다.</p>
 
 <h2 id="connect-project">7. 내가 개발하는 프로젝트 연결하기.</h2>
 <h3>필요한 파일.</h3>
@@ -1367,7 +1367,7 @@ node $checkmateCli --data-dir $checkmateData evidence $checkmateRunId $checkmate
 <li><a href="https://github.com/yeunlee1/checkmate/blob/develop/%EB%AC%B8%EC%84%9C/%EA%B5%AC%ED%98%84%EA%B8%B0%EC%A4%80%EC%84%A4%EA%B3%84.md">구현 기준 설계</a>.</li>
 <li><a href="https://github.com/yeunlee1/checkmate/blob/develop/%EB%AC%B8%EC%84%9C/%EA%B0%9C%EB%B0%9C%ED%98%84%ED%99%A9.md">개발 현황</a>.</li>
 </ul>
-<p>실제 프로젝트의 완료 여부는 그 프로젝트에서 실행한 현재 결과와 근거로 판단합니다.</p></article><footer>작성 기준 2026-09-25 · 실제 합성 예제 화면 4장 포함.<br>원문 문서/상세사용설명서.md · 원문 SHA-256 <code>779c3ed8904134044bea8411ae04dc3622838901ab4fead77f10aadff104ed86</code><br>이 파일은 원문의 배포용 스냅샷입니다. 관련 문서와 코드 링크는 GitHub develop을 엽니다.</footer></main></div>
+<p>실제 프로젝트의 완료 여부는 그 프로젝트에서 실행한 현재 결과와 근거로 판단합니다.</p></article><footer>작성 기준 2026-09-25 · 실제 합성 예제 화면 4장 포함.<br>원문 문서/상세사용설명서.md · 원문 SHA-256 <code>7a0e0178bc9e685d1f77b34ad205f76c14d96d105f33f687e9adf9515236b5e0</code><br>이 파일은 원문의 배포용 스냅샷입니다. 관련 문서와 코드 링크는 GitHub develop을 엽니다.</footer></main></div>
 <dialog id="viewer" aria-labelledby="viewer-title"><header><h2 id="viewer-title">실제 앱 화면 확대</h2><button type="button">닫기</button></header><img alt=""></dialog><script>
 const contents = document.getElementById('contents');
 if (matchMedia('(max-width:780px)').matches) contents.open = false;
