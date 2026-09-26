@@ -70,6 +70,8 @@ program.command('setup').description('명시적 동의 후 전용 로컬 저장�
     await initializeLocalStore(clientOptions());
     write({ initialized: true }, '체크메이트 로컬 저장소를 준비했습니다.');
   });
+program.command('capabilities').description('연결된 서비스의 자료 폴더와 제공 기능을 확인한다.')
+  .action(async () => output(await invoke('capabilities', {})));
 program.command('projects').option('--cursor <cursor>').option('--limit <count>').action(async (opts: Record<string, unknown>) => output(await invoke('projects', optionalPage(opts))));
 program.command('register <path>').description('선택한 프로젝트의 검사 원본을 등록한다. 실행 승인은 별도다.')
   .option('--trust', '선택한 프로젝트 경로와 원본을 확인했다.')
