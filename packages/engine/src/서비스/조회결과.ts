@@ -44,7 +44,8 @@ export function resultSummary(result: RunResult, integrity: 'verified' | 'degrad
     cleanupVerified: result.cleanupVerified, planned: result.plannedChecks.length, required: result.requiredChecks.length,
     total: result.cases.length, counts: statuses, reasons: [] as string[], omittedReasons: result.reasons.length,
     failures: [] as ReturnType<typeof compactCase>[], omittedFailures: failures.length,
-    detail: '실패 전체는 get_run_result의 cases 또는 repair-bundle section에서 조회해 주세요.' };
+    detail: (integrity === 'pending' ? '이 응답은 증거의 현재 무결성을 재검증하지 않았습니다. finalized=true이면 get_run_result의 summary에서 현재 무결성과 reusablePassed를 확인해 주세요. ' : '')
+      + '실패 전체는 get_run_result의 cases 또는 repair-bundle section에서 조회해 주세요.' };
   const fits = () => Buffer.byteLength(JSON.stringify({ content: [{ type: 'text', text: JSON.stringify({
     apiVersion: 1, requestId: '0'.repeat(36), ok: true, data: summary,
   }) }], isError: false }), 'utf8') <= 7800;

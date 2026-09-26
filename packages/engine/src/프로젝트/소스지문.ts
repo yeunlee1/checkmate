@@ -14,8 +14,10 @@ export class ProjectSourceError extends Error {
   }
 }
 
-const excludedDirectories = ['.git', 'node_modules', '.runtime', 'dist', 'out', 'coverage', '.vite'];
-const exclusionRules = { version: 1, directories: excludedDirectories, files: ['.env', '.env.*', '*.pem', '*.key'] };
+const excludedDirectories = ['.git', 'node_modules', '.runtime', 'dist', 'out', 'coverage', '.vite',
+  '.next', '.build', '.open-next', '.codegraph', '.wrangler', '.local'];
+const exclusionRules = { version: 2, directories: excludedDirectories,
+  files: ['.env', '.env.*', '.dev.vars', '.dev.vars.*', '*.pem', '*.key'] };
 
 export function assertIncludedEntry(parts: string[]): void {
   if (parts.slice(0, -1).some((part) => excludedDirectories.includes(part.toLowerCase()))
@@ -45,7 +47,8 @@ function safeName(name: string): boolean {
 
 function excludedFile(name: string): boolean {
   const lower = name.toLowerCase();
-  return lower === '.env' || lower.startsWith('.env.') || lower.endsWith('.pem') || lower.endsWith('.key');
+  return lower === '.env' || lower.startsWith('.env.') || lower === '.dev.vars' || lower.startsWith('.dev.vars.')
+    || lower.endsWith('.pem') || lower.endsWith('.key');
 }
 
 function ioError(error: unknown): ProjectSourceError {

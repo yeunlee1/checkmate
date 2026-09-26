@@ -113,7 +113,30 @@ describe('프로젝트 원본', () => {
     expect(await fingerprintSource(root)).toBe(untracked);
   });
 
-  it.each(['dist', 'out', 'node_modules', '.runtime', '.git', 'coverage', '.vite'])(
+  it('빌드 생성물과 로컬 자료는 읽지 않고 새 소스와 설정 변경은 감지한다.', async () => {
+    const baseline = await fingerprintSource(root);
+    for (const directory of ['.next', '.build', '.open-next', '.codegraph', '.wrangler', '.local']) {
+      const generated = join(root, directory);
+      await mkdir(generated);
+      const large = join(generated, '합성자료.bin');
+      await writeFile(large, '');
+      await truncate(large, 256 * 1024 * 1024 + 1);
+    }
+    for (const file of ['.dev.vars', '.dev.vars.local', '.DEV.VARS.test']) {
+      await writeFile(join(root, file), '합성 비밀 설정');
+    }
+    expect(await fingerprintSource(root)).toBe(baseline);
+    await writeFile(join(root, '.dev.vars'), '변경된 합성 비밀 설정');
+    expect(await fingerprintSource(root)).toBe(baseline);
+    await writeFile(join(root, 'next.config.ts'), 'export default { reactStrictMode: true };');
+    const configured = await fingerprintSource(root);
+    expect(configured).not.toBe(baseline);
+    await writeFile(join(root, 'src', 'new.ts'), 'export const changed = true;');
+    expect(await fingerprintSource(root)).not.toBe(configured);
+  });
+
+  it.each(['dist', 'out', 'node_modules', '.runtime', '.git', 'coverage', '.vite',
+    '.next', '.build', '.open-next', '.codegraph', '.wrangler', '.local', '.NEXT'])(
     '%s 안의 명령 진입점은 재빌드 전에도 거절하고 일반 Node 경로는 허용한다.', async (directory) => {
       await mkdir(join(root, directory));
       await writeFile(join(root, directory, 'run.mjs'), 'process.exit(0);');
@@ -131,7 +154,8 @@ describe('프로젝트 원본', () => {
       expect((await readProjectSource(root)).sourceHash).not.toBe(approved.sourceHash);
     });
 
-  it.each(['.env.check.mjs', '.ENV.check.mjs', '.env', 'private.pem', 'private.KEY'])(
+  it.each(['.env.check.mjs', '.ENV.check.mjs', '.env', 'private.pem', 'private.KEY',
+    '.dev.vars.check.mjs', '.DEV.VARS.check.mjs'])(
     '지문 제외 파일명 %s를 실행 진입점으로 승인하지 않는다.', async (name) => {
       await mkdir(join(root, 'tests'));
       await writeFile(join(root, 'tests', name), 'process.exit(0);');
