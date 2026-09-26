@@ -14,7 +14,7 @@ import { EvidenceStore } from '../저장/증거저장.js';
 import { RunService } from './실행서비스.js';
 import type { RunExecutor } from './실행서비스.js';
 import type { ClientRole } from '../연결/로컬통신.js';
-import { boundedPage, compactCase, resultSummary } from './조회결과.js';
+import { boundedPage, compactCase, compactRepairCase, failurePriority, resultSummary } from './조회결과.js';
 import { requirementEvidence } from './요구사항근거.js';
 import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
 import type { DataPaths } from '../연결/개인경로.js';
@@ -153,11 +153,11 @@ export class ProductService {
           const definition = byId.get(id)!;
           const item = result.cases.find(candidate => candidate.testId === id);
           if (item?.status === 'passed' && integrity === 'verified') return [];
-          return [{ ...compactCase(item ?? { testId: id, status: 'not-run', requirementId: definition.requirementId,
+          return [{ ...compactRepairCase(item ?? { testId: id, status: 'not-run', requirementId: definition.requirementId,
             expected: definition.expected, observed: null, evidenceIds: [], severity: 'warning', location: null }),
             codePaths: definition.codePaths, integrity, missingObservation: !item,
             instruction: '기대값과 실제 관측 및 필요한 증거를 확인하고 테스트를 약화하지 않은 채 수정해 주세요.' }];
-        });
+        }).sort((left, right) => failurePriority(left) - failurePriority(right));
         return { runId: result.runId, planHash: result.planHash, sourceBefore: result.sourceBefore, sourceAfter: result.sourceAfter,
           integrity, reasons: result.reasons, guidance: { untrustedEvidence: true, automaticRetry: 0, suggestedRepairAttempts: 2, suggestedBudgetMinutes: 15,
             nextAction: '코드와 검사를 보완한 뒤 원본 변경을 다시 확인하고 새 계획으로 실행해 주세요. 기준 약화는 사람의 확인이 필요합니다.' },

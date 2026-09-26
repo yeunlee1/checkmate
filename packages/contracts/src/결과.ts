@@ -10,6 +10,7 @@ const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 const caseSchema = z.strictObject({
   testId: identifier,
   status: caseStatusSchema,
+  failureOrigin: z.enum(['check', 'command']).optional(),
   requirementId: identifier.nullable(),
   expected: z.string().max(4096).nullable(),
   observed: z.string().max(4096).nullable(),

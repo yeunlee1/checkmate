@@ -8,6 +8,8 @@ import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { readProjectSource } from '../packages/engine/src/프로젝트/원본읽기.js';
 import { createProjectExecutor } from '../packages/engine/src/서비스/검사실행기.js';
 import { RunService } from '../packages/engine/src/서비스/실행서비스.js';
+import { resultSummary } from '../packages/engine/src/서비스/조회결과.js';
+import { ProductService } from '../packages/engine/src/서비스/제품서비스.js';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { EvidenceStore } from '../packages/engine/src/저장/증거저장.js';
@@ -29,7 +31,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 type Scenario = 'exit-pass' | 'exit-fail' | 'ndjson-pass' | 'ndjson-fail' | 'missing'
   | 'duplicate' | 'outside' | 'tampered-evidence' | 'source-change' | 'prechange' | 'cancel'
-  | 'worker-crash' | 'secret-output' | 'two-commands' | 'ndjson-timeout' | 'ndjson-output-limit';
+  | 'worker-crash' | 'secret-output' | 'two-commands' | 'ndjson-timeout' | 'ndjson-output-limit' | 'ndjson-many-fail';
 
 const script = String.raw`
 import { createHash, randomUUID } from 'node:crypto';
@@ -53,12 +55,18 @@ if (mode.startsWith('ndjson') || mode === 'duplicate' || mode === 'outside'
   || mode === 'tampered-evidence' || mode === 'secret-output' || mode === 'two-commands') {
   process.stdout.write(event(1, 'case-result', mode === 'outside' ? { ...result, testId: 'other' } : result) + '\n');
 }
+if (mode === 'ndjson-many-fail') for (let index = 2; index <= 13; index += 1) {
+  process.stdout.write(event(index, 'case-result', { ...result, testId: 'check-' + index,
+    status: index <= 10 ? 'passed' : index === 11 ? 'failed' : 'not-run',
+    ...(index === 11 ? { failureOrigin: 'command', observed: '체크박스 선택 상태가 바뀌지 않았습니다.', severity: 'error' } : {}),
+  }) + '\n');
+}
 if (mode === 'duplicate') process.stdout.write(event(2, 'case-result', result) + '\n');
 if (mode === 'tampered-evidence') process.stdout.write(event(2, 'evidence-created', evidence) + '\n');
 if (mode === 'source-change') writeFileSync(join(process.cwd(), 'source.txt'), '변경');
 if (mode === 'ndjson-timeout') { setInterval(() => {}, 1000); await new Promise(() => {}); }
 if (mode === 'ndjson-output-limit') { process.stdout.write('X'.repeat(300000)); await new Promise(() => {}); }
-process.exit(mode === 'exit-fail' || mode === 'ndjson-fail' ? 9 : 0);
+process.exit(mode === 'exit-fail' || mode === 'ndjson-fail' || mode === 'ndjson-many-fail' ? 9 : 0);
 `;
 
 async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, directory: string) => Promise<{
@@ -73,6 +81,8 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
   const ndjson = !mode.startsWith('exit') && mode !== 'source-change' && mode !== 'prechange'
     && mode !== 'cancel' && mode !== 'worker-crash';
   const second = mode === 'two-commands';
+  const checkIds = mode === 'ndjson-many-fail' ? Array.from({ length: 13 }, (_, index) => `check-${index + 1}`)
+    : second ? ['check-1', 'check-2'] : ['check-1'];
   const source = {
     project: { schemaVersion: 1, id: projectId, name: '합성 프로젝트', repositoryIdentity: 'synthetic:executor',
       commands: [{ id: 'run', title: '합성 명령', runtime: 'node', entry: 'tests/run.mjs',
@@ -80,13 +90,14 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
         resultFormat: ndjson ? 'ndjson' : 'exit-code' },
       ...(second ? [{ id: 'other-run', title: '두 번째 명령', runtime: 'node', entry: 'tests/run.mjs',
         args: [mode, 'check-2'], timeoutMs: 5000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' }] : [])],
-      profiles: [{ id: 'quick', title: '빠른 검사', checkIds: second ? ['check-1', 'check-2'] : ['check-1'] }] },
+      profiles: [{ id: 'quick', title: '빠른 검사', checkIds }] },
     requirements: [{ id: 'req-1', title: '요구사항', description: '합성 검사 결과' }],
     checks: [{ id: 'check-1', title: '검사', requirementId: 'req-1', commandId: 'run',
       required: true, kind: 'logic', expected: '성공', codePaths: [] },
     ...(second ? [{ id: 'check-2', title: '두 번째 검사', requirementId: 'req-1', commandId: 'other-run',
       required: true, kind: 'logic', expected: '성공', codePaths: [] }] : [])],
   };
+  if (mode === 'ndjson-many-fail') source.checks = checkIds.map(id => ({ ...source.checks[0]!, id }));
   await writeFile(join(sourceRoot, 'checkmate', '프로젝트.json'), JSON.stringify(source.project));
   await writeFile(join(sourceRoot, 'checkmate', '요구사항.json'), JSON.stringify(source.requirements));
   await writeFile(join(sourceRoot, 'checkmate', '검사항목.json'), JSON.stringify(source.checks));
@@ -101,8 +112,8 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
     catalog: { id: randomUUID(), contentHash: snapshot.contentHash, source: JSON.parse(JSON.stringify(snapshot.source)) },
     plan: { id: randomUUID(), fingerprint: createHash('sha256').update(mode).digest('hex'),
       sourceHash: snapshot.sourceHash, profile: 'quick',
-      plannedChecks: second ? ['check-1', 'check-2'] : ['check-1'],
-      requiredChecks: second ? ['check-1', 'check-2'] : ['check-1'] },
+      plannedChecks: checkIds,
+      requiredChecks: checkIds },
     createdAt: new Date().toISOString(),
   };
   const db = connectStore(fixture.dbPath);
@@ -127,7 +138,11 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
       && ['exit-pass', 'ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
       ? JSON.parse(await readFile(join(runsRoot, started.runId, '명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
       : null;
-    return { result, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
+    const repair = mode === 'ndjson-many-fail' ? await new ProductService(db, evidence, async () => result).handle({
+      apiVersion: 1, requestId: randomUUID(), method: 'result',
+      input: { runId: started.runId, section: 'repair-bundle' },
+    }, 'agent') : null;
+    return { result, repair, evidence: evidence.list(started.runId), events: events.list(started.runId), command };
   } finally {
     db.close();
     await cleanupAlias?.();
@@ -136,6 +151,20 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
 }
 
 describe('고정 계획 검사실행기', () => {
+  it('명령 영향 실패 열 개 뒤의 직접 실패를 요약에서 먼저 보여주고 어댑터의 출처 주장을 덮어쓴다', async () => {
+    const { result, repair } = await scenario('ndjson-many-fail');
+    expect(result).toMatchObject({ verdict: 'failed', workerExitCode: 0, finalized: true });
+    expect(result.cases.slice(0, 10)).toEqual(expect.arrayContaining([expect.objectContaining({ status: 'failed', failureOrigin: 'command' })]));
+    expect(result.cases[10]).toMatchObject({ testId: 'check-11', status: 'failed', failureOrigin: 'check' });
+    const summary = resultSummary(result, 'verified');
+    expect(summary.counts).toEqual({ failed: 11, 'not-run': 2 });
+    expect(summary.failures[0]).toMatchObject({ testId: 'check-11', failureOrigin: 'check', observed: '체크박스 선택 상태가 바뀌지 않았습니다.' });
+    expect(summary.reusablePassed).toBe(false);
+    expect(repair?.ok).toBe(true);
+    if (!repair?.ok) throw new Error('수정 묶음 조회 실패');
+    expect((repair.data as { items: unknown[] }).items[0]).toMatchObject({ testId: 'check-11', failureOrigin: 'check' });
+  });
+
   it.runIf(process.platform === 'win32')('실제 8.3 자료 경로에서 명령 실행과 증거 및 정리를 확인한다.', async (context) => {
     const { result, evidence, command } = await scenario('exit-pass', async (runsRoot) => {
       const encoded = Buffer.from(runsRoot, 'utf8').toString('base64');

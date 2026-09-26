@@ -221,7 +221,7 @@ function runWorker(config: WorkerConfig, signal: AbortSignal, titles: readonly s
 
 function caseFor(check: CheckDefinition, status: RunResult['cases'][number]['status'], observed: string,
   evidenceIds: string[]): RunResult['cases'][number] {
-  return { testId: check.id, status, requirementId: check.requirementId,
+  return { testId: check.id, status, ...(status === 'passed' ? {} : { failureOrigin: 'command' as const }), requirementId: check.requirementId,
     expected: scrub(check.expected) as string, observed, evidenceIds,
     severity: status === 'passed' ? 'info' : 'error', location: null };
 }
@@ -318,6 +318,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
                 || parsedCase.data.requirementId !== check.requirementId || cases.has(check.id))
                 throw new Error('계획 밖 검사 결과입니다.');
               cases.set(check.id, { ...parsedCase.data,
+                failureOrigin: parsedCase.data.status === 'failed' ? 'check' : undefined,
                 evidenceIds: [...new Set([...parsedCase.data.evidenceIds, message.evidence.id])] });
             } else if (event.type === 'evidence-created') {
               const parsedEvidence = evidenceSchema.safeParse(event.payload);
@@ -351,7 +352,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
           const status = message.outcome.status === 'exited' ? 'failed'
             : message.outcome.status === 'timed-out' ? 'timed-out'
               : message.outcome.status === 'cancelled' ? 'interrupted' : 'unknown';
-          cases.set(id, { ...cases.get(id)!, status,
+          cases.set(id, { ...cases.get(id)!, status, failureOrigin: 'command',
             observed: `명령 종료 상태 ${message.outcome.status}, 코드 ${message.outcome.exitCode ?? '없음'}` });
         }
       }

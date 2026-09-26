@@ -5,7 +5,7 @@ import { expect, it } from 'vitest';
 import { resultInputSchema } from '@checkmate/contracts';
 import type { ApiResponse } from '@checkmate/contracts/api';
 import { createAgentServer } from '../packages/engine/src/연결/에이아이서버.js';
-import { compactCase, resultSummary } from '../packages/engine/src/서비스/조회결과.js';
+import { compactCase, compactRepairCase, resultSummary } from '../packages/engine/src/서비스/조회결과.js';
 import { completeResult } from './결과자료.js';
 
 it('긴 한글 실패 다섯 건을 result와 status에서 8KiB 안에 조회한다.', async () => {
@@ -91,4 +91,19 @@ it('최대 식별자와 이유 및 JSON escape가 많아도 실제 MCP 조회가
     await client.close();
     await server.close();
   }
+});
+
+it('수정 묶음은 ANSI를 제거한 긴 진단을 제공하고 원본과 구버전 출처를 바꾸지 않는다', () => {
+  const observed = '\u001b[31m' + 'safe diagnostic '.repeat(60) + '\u001b[0m';
+  const item = { ...completeResult().cases[0]!, status: 'failed' as const, observed };
+  const summary = compactCase(item);
+  const repair = compactRepairCase(item);
+  expect(summary.observed).toHaveLength(384);
+  expect(repair.observed).toBe('safe diagnostic '.repeat(60));
+  expect(repair.truncated).toBe(false);
+  expect(repair).not.toHaveProperty('failureOrigin');
+  expect(item.observed).toBe(observed);
+  const long = compactRepairCase({ ...item, observed: '긴진단'.repeat(2000), expected: '긴기대'.repeat(2000) });
+  expect(long.truncated).toBe(true);
+  expect(long.observed!.length).toBe(384);
 });
