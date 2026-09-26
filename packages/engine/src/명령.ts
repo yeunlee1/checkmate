@@ -126,6 +126,10 @@ program.command('import-history <path>').description('아틀리에 과거 보고
   .requiredOption('--project <id>').action(async (path: string, opts: { project: string }) => output(await invoke('import-history', { projectId: opts.project, path })));
 program.command('result <run>').option('--section <name>', 'summary/cases/requirements/gaps/repair-bundle/imported.', 'summary').option('--cursor <cursor>').option('--limit <count>')
   .action(async (run: string, opts: Record<string, unknown>) => output(await invoke('result', { runId: run, section: opts.section, ...optionalPage(opts) })));
+program.command('evidence-image <run> <evidence>').description('공개 PNG 증거를 검증한 뒤 제한된 base64 구간으로 조회한다.').option('--cursor <cursor>')
+  .action(async (run: string, evidence: string, opts: { cursor?: string }) => output(await invoke('evidence-image', {
+    runId: run, evidenceId: evidence, ...(opts.cursor === undefined ? {} : { cursor: opts.cursor }),
+  })));
 program.command('evidence <run> <evidence>').option('--content', '허용된 본문을 조회한다.').option('--cursor <cursor>').option('--limit <bytes>')
   .action(async (run: string, evidence: string, opts: Record<string, unknown>) => output(await invoke('evidence', { runId: run, evidenceId: evidence, content: opts.content === true, ...optionalPage(opts) })));
 program.command('cancel <run>').action(async (run: string) => output(await invoke('cancel', { runId: run })));
