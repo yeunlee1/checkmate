@@ -112,10 +112,11 @@ export class ProductService {
         if (this.db.prepare(`SELECT 1 FROM resources owned JOIN runs r ON r.id=owned.run_id
           WHERE r.workspace_id=? AND owned.state!='cleaned' LIMIT 1`).get(plan.workspace.id))
           throw new ServiceError('ownership-unknown', '이전 실행의 시험 DB 정리가 확인되지 않았습니다.');
-        const unresolved = this.db.prepare(`SELECT 1 FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state IN ('unverifiable','cancelled')
+        const unresolved = this.db.prepare(`SELECT r.id AS runId FROM runs r WHERE r.workspace_id=? AND r.origin='live' AND r.state IN ('unverifiable','cancelled')
           AND json_extract(r.summary_json,'$.cleanupVerified') IS NOT 1
-          AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=r.id AND a.action='cleanup-acknowledged' AND a.actor_kind='human') LIMIT 1`).get(plan.workspace.id);
-        if (unresolved) throw new ServiceError('ownership-unknown', '이전 실행의 정리가 확인되지 않았습니다.');
+          AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=r.id AND a.action='cleanup-acknowledged' AND a.actor_kind='human') LIMIT 1`).get(plan.workspace.id) as { runId: string } | undefined;
+        if (unresolved) throw new ServiceError('ownership-unknown', `이전 실행 ${unresolved.runId}의 프로세스 종료와 정리가 확인되지 않았습니다.`, false,
+          `이전 실행 ${unresolved.runId}의 작업자·자손 프로세스 종료와 자원 부재를 사람이 직접 확인하세요. resources=cleaned/verified만으로 프로세스 종료가 확인되지는 않습니다. 확인한 경우에만 같은 자료 폴더의 사람용 CLI에서 acknowledge-cleanup ${unresolved.runId} --confirm --note "실제 확인 근거"를 실행하세요. 기존 판정은 보존됩니다. AI는 사람 확인을 대행하지 마세요.`);
         const accepted = this.execution.start({ ...input, requestId: request.requestId });
         this.pending.add(accepted.runId);
         void this.execution.wait(accepted.runId).then((result) => this.recordGaps(result), () => { this.storageFailure = true; })
