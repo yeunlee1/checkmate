@@ -93,6 +93,8 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   expect(await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'backup', input: {} }, 'agent'))
     .toMatchObject({ ok: false, error: { code: 'human-action-required' } });
   const evidenceId: string = cases[0].evidenceIds[0];
+  const imageDenied = await f.command('evidence-image', runId, evidenceId);
+  expect(imageDenied.response).toMatchObject({ ok: false, error: { code: 'evidence-restricted' } });
   const evidence = (await f.command('evidence', runId, evidenceId)).response.data.evidence;
   const file = join(f.service.paths.runs, runId, evidence.relativePath);
   const before = await readFile(file);

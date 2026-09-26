@@ -5,6 +5,10 @@ import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { afterEach, expect, test } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createAgentServer } from '../packages/engine/src/연결/에이아이서버.js';
+import { ProductService } from '../packages/engine/src/서비스/제품서비스.js';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -245,5 +249,53 @@ test('저장 루트의 링크는 거절하고 Windows 짧은 경로는 실제 �
       'for %I in (%CHECKMATE_TEST_ROOT%) do @echo %~sI'],
     { env: { ...process.env, CHECKMATE_TEST_ROOT: runsRoot }, encoding: 'utf16le', windowsHide: true }).trim();
     expect(new EvidenceStore(db, short).list(randomUUID())).toEqual([]);
+  }
+});
+
+test('AI 공개 도구는 검증된 PNG를 구간으로 제공하며 제한 증거와 변조를 계속 차단한다', async () => {
+  const { db, store, addRun } = await fixture();
+  const run = await addRun();
+  const bytes = png(192, 128);
+  const publicEvidence = { id: randomUUID(), relativePath: '공개.png', sha256: hash(bytes), byteLength: bytes.length,
+    mime: 'image/png' as const, sensitivity: 'public' as const };
+  await writeFile(join(run.root, publicEvidence.relativePath), bytes);
+  await store.register(run.runId, publicEvidence);
+  const restricted = { ...publicEvidence, id: randomUUID(), relativePath: '제한.png', sensitivity: 'restricted' as const };
+  await writeFile(join(run.root, restricted.relativePath), bytes);
+  await store.register(run.runId, restricted);
+  const product = new ProductService(db, store, async () => { throw new Error('이미지 조회는 실행기를 사용하지 않습니다.'); });
+  const server = createAgentServer(request => product.handle(request, 'agent'));
+  const client = new Client({ name: 'public-image-test', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const parts: Buffer[] = [];
+    let cursor: string | null = null;
+    do {
+      const response = await client.callTool({ name: 'get_evidence_image', arguments: {
+        runId: run.runId, evidenceId: publicEvidence.id, ...(cursor ? { cursor } : {}),
+      } });
+      expect(response.isError).toBe(false);
+      expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(32768);
+      const parsed = JSON.parse((response.content as { text: string }[])[0]!.text);
+      expect(parsed).toMatchObject({ ok: true, data: { integrity: 'verified', mime: 'image/png', sha256: hash(bytes), width: 192, height: 128 } });
+      parts.push(Buffer.from(parsed.data.base64, 'base64'));
+      cursor = parsed.data.nextCursor;
+    } while (cursor);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(Buffer.concat(parts)).toEqual(bytes);
+    const denied = await client.callTool({ name: 'get_evidence_image', arguments: { runId: run.runId, evidenceId: restricted.id } });
+    expect(denied.isError).toBe(true);
+    expect(JSON.parse((denied.content as { text: string }[])[0]!.text)).toMatchObject({ ok: false, error: { code: 'evidence-restricted' } });
+    await writeFile(join(run.root, publicEvidence.relativePath), Buffer.alloc(bytes.length));
+    const tampered = await client.callTool({ name: 'get_evidence_image', arguments: { runId: run.runId, evidenceId: publicEvidence.id } });
+    expect(tampered.isError).toBe(true);
+    expect(JSON.parse((tampered.content as { text: string }[])[0]!.text)).toMatchObject({ ok: false, error: { code: 'evidence-degraded' } });
+    expect(await product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'approve', input: {} }, 'agent'))
+      .toMatchObject({ ok: false, error: { code: 'human-action-required' } });
+  } finally {
+    await client.close();
+    await server.close();
   }
 });
