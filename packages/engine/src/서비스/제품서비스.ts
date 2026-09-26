@@ -68,7 +68,7 @@ export class ProductService {
         apiInputs.capabilities.parse(raw);
         return { version: '0.1.0-alpha.1', apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
           connection: this.paths ? { dataRoot: this.paths.root } : null,
-          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'resource-recovery'],
+          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'resource-recovery', 'public-images'],
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
       case 'projects': {

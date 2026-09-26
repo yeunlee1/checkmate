@@ -44,7 +44,7 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'evidence-image', 'acknowledge-cleanup', 'cleanup-resources']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources']);
 
 export class ServiceError extends Error {
   constructor(readonly code: string, message = '요청을 처리할 수 없습니다.', readonly retryable = false, readonly nextAction = '입력과 현재 상태를 확인해 주세요.') {
