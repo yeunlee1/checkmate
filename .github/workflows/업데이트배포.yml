@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: checkmate-release-${{ github.ref_type == 'tag' && 'stable' || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   build:
@@ -85,6 +85,7 @@ jobs:
             .runtime/update-*/상태.json
             .runtime/update-*/앱오류.txt
             .runtime/update-*/앱표준오류.log
+            .runtime/update-*/업데이트오류.log
             .runtime/update-*/CheckMateFixture*/SquirrelSetup.log
           if-no-files-found: ignore
           retention-days: 14

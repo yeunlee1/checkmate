@@ -18,13 +18,17 @@ const root = resolve('.runtime', `update-${randomUUID()}`);
 const identity = `CheckMateFixture${randomUUID().replaceAll('-', '')}`;
 const install = join(root, identity);
 const dataRoot = join(root, '합성 자료');
+const dbPath = join(dataRoot, 'state/checkmate.sqlite');
 const commandFile = join(root, '명령.json');
 const statusFile = join(root, '상태.json');
 const env = { ...process.env, CHECKMATE_DATA_DIR: dataRoot };
 for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH', 'CHECKMATE_RENDERER_URL', 'CHECKMATE_SIGN_THUMBPRINT']) delete env[key];
 const execute = promisify(execFile);
 const pause = ms => new Promise(done => setTimeout(done, ms));
-const report = { passed: false, root, identity, dataRoot, sourceCommit: built.source.commit, phases: [] };
+const report = { passed: false, root, identity, dataRoot, runtimeBuildCommit: built.source.commit,
+  sourceCommit: (await execute('git', ['rev-parse', 'HEAD'], { windowsHide: true })).stdout.trim(),
+  sourceDirty: (await execute('git', ['status', '--porcelain'], { windowsHide: true })).stdout.trim().length > 0,
+  phases: [] };
 const requests = [];
 let feedFolder;
 let corrupt = true;
@@ -75,11 +79,12 @@ if(process.argv.some(x=>/^--squirrel-(install|updated|uninstall|obsolete)$/.test
 else { app.setPath('userData',${JSON.stringify(join(root, '화면 자료'))}); void app.whenReady().then(async()=>{
 const native={on:(...args)=>autoUpdater.on(...args),setFeedURL:()=>autoUpdater.setFeedURL({url:${JSON.stringify(feed)}}),checkForUpdates:()=>autoUpdater.checkForUpdates(),quitAndInstall:()=>autoUpdater.quitAndInstall()};
 const controller=new UpdateController(native,${JSON.stringify(install)});
+autoUpdater.on('error',error=>{void writeFile(${JSON.stringify(join(root, '업데이트오류.log'))},String(error.stack));});
 let command=0,busy=false; await controller.recover();
 setInterval(async()=>{if(busy)return;busy=true;try{
 let next;try{next=JSON.parse(await readFile(${JSON.stringify(commandFile)},'utf8'));}catch{next={};}
 if(next.id>command){command=next.id;if(next.action==='quit'){app.quit();return;}if(app.getVersion()==='1.0.0'){if(next.action==='check')await controller.check();if(next.action==='apply')await controller.apply();}}
-await controller.recover(); await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.status(),version:app.getVersion(),pid:process.pid,command}));
+await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.status(),version:app.getVersion(),pid:process.pid,command}));
 }catch(error){await writeFile(${JSON.stringify(join(root, '앱오류.txt'))},String(error.stack));app.exit(1);}finally{busy=false;}},200);
 }).catch(error=>{console.error(error);app.exit(1);});
 }`);
@@ -129,9 +134,9 @@ await controller.recover(); await writeFile(${JSON.stringify(statusFile)},JSON.s
     return ['checking', 'downloading', 'error'].includes((await state()).state);
   }, 120000);
   await waitFor(async () => (await state()).state === 'error');
+  assert.ok(requests.some(name => name.endsWith('.nupkg')));
   assert.equal((await state()).version, '1.0.0'); report.phases.push('corrupt-download-rejected');
-  const dbFiles = (await readdir(dataRoot)).filter(name => /\.sqlite$|\.db$/.test(name)); assert.equal(dbFiles.length, 1);
-  const dbPath = join(dataRoot, dbFiles[0]);
+  assert.equal((await lstat(dbPath)).isFile(), true);
   const digest = async () => createHash('sha256').update(await readFile(dbPath)).digest('hex');
   report.databaseBefore = await digest(); corrupt = false;
   await writeFile(commandFile, JSON.stringify({ id: ++lastCommand, action: 'check' }));
@@ -166,7 +171,7 @@ finally {
       assert.equal(resolve(install), join(root, identity));
       await execute(join(install, 'Update.exe'), ['--uninstall', '--silent'], { cwd: install, env, windowsHide: true, timeout: 40000 });
       await waitFor(async () => !(await lstat(join(install, 'app-1.0.1/CheckMate.exe')).then(() => true, () => false)), 40000);
-      assert.equal(createHash('sha256').update(await readFile(join(dataRoot, 'checkmate.sqlite'))).digest('hex'), report.databaseAfter);
+      assert.equal(createHash('sha256').update(await readFile(dbPath)).digest('hex'), report.databaseAfter);
       report.cleanupVerified = true;
     } catch (error) { report.passed = false; report.cleanupError = error.message; process.exitCode = 1; }
   }
