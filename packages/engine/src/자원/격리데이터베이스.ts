@@ -1,4 +1,4 @@
-// 실행별 합성 PostgreSQL 컨테이너의 생성과 검증된 정리를 관리한다.
+// 실행별 합성 DB 컨테이너의 생성과 검증된 정리를 관리한다.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -6,18 +6,18 @@ import { connect } from 'node:net';
 import { promisify } from 'node:util';
 import type { ResourceDescriptor, ResourceRecord, ResourceStore } from '../저장/자원저장.js';
 import { localDockerEndpointSchema } from '../저장/자원저장.js';
+import { databaseResourceKinds, databaseResourceNames, type DatabaseResourceKind } from '@checkmate/contracts/resources';
+import { databaseConnection, databaseSpecs } from './데이터베이스종류.js';
 
 const execFileAsync = promisify(execFile);
-const IMAGE = 'postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24';
-const DATA = '/var/lib/postgresql/data';
-const USER = 'respiro_test';
 const LABELS = ['checkmate.run-id', 'checkmate.resource-id', 'checkmate.owner-hash', 'checkmate.purpose'] as const;
-type CommandOptions = { env?: Record<string, string>; signal?: AbortSignal; timeoutMs?: number };
+type CommandOptions = { env?: Record<string, string>; input?: string; signal?: AbortSignal; timeoutMs?: number };
 
-export interface PostgresTestDriver {
+export interface DatabaseTestDriver {
   command(args: string[], options?: CommandOptions): Promise<string>;
   probe(port: number): Promise<void>;
 }
+export type PostgresTestDriver = DatabaseTestDriver;
 
 function dockerPath(): string {
   if (process.platform !== 'win32') return 'docker';
@@ -28,7 +28,7 @@ function dockerPath(): string {
   return paths.find(existsSync) ?? 'docker.exe';
 }
 
-const systemDriver: PostgresTestDriver = {
+const systemDriver: DatabaseTestDriver = {
   async command(args, options) {
     const env = { ...process.env };
     delete env.DOCKER_HOST;
@@ -36,8 +36,12 @@ const systemDriver: PostgresTestDriver = {
     delete env.DOCKER_TLS_VERIFY;
     delete env.DOCKER_CERT_PATH;
     Object.assign(env, options?.env);
-    const { stdout } = await execFileAsync(dockerPath(), args, { env, windowsHide: true, maxBuffer: 1024 * 1024,
+    const pending = execFileAsync(dockerPath(), args, { env, windowsHide: true, maxBuffer: 1024 * 1024,
       timeout: options?.timeoutMs ?? 15000, killSignal: 'SIGKILL', ...(options?.signal ? { signal: options.signal } : {}) });
+    // SQL*Plus 인증 입력도 프로세스 인자나 파일에 남기지 않는다.
+    pending.child.stdin?.on('error', () => { /* 조기 종료는 명령 결과에서 처리한다. */ });
+    pending.child.stdin?.end(options?.input);
+    const { stdout } = await pending;
     return stdout;
   },
   probe(port) {
@@ -62,7 +66,7 @@ function labels(record: ResourceRecord): Record<string, string> {
     [LABELS[0]]: record.runId,
     [LABELS[1]]: record.id,
     [LABELS[2]]: record.ownerTokenHash,
-    [LABELS[3]]: 'postgres-test',
+    [LABELS[3]]: record.kind,
   };
 }
 
@@ -89,9 +93,9 @@ async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: 
   }
 }
 
-export class PostgresResources {
+export class DatabaseResources {
   private readonly preparing = new Set<string>();
-  constructor(private readonly store: ResourceStore, private readonly driver: PostgresTestDriver = systemDriver) {}
+  constructor(private readonly store: ResourceStore, private readonly driver: DatabaseTestDriver = systemDriver) {}
 
   private async command(endpoint: string, args: string[], options?: CommandOptions): Promise<string> {
     localDockerEndpointSchema.parse(endpoint);
@@ -130,26 +134,33 @@ export class PostgresResources {
   }
 
   private async verify(record: ResourceRecord, item: Record<string, any>, requirePort = true, signal?: AbortSignal): Promise<{ id: string; port: number }> {
+    const spec = databaseSpecs[record.kind];
+    const imageName = record.descriptor.image;
+    const portKey = `${spec.port}/tcp`;
+    const paths = Object.keys(spec.tmpfs);
+    // 저장된 종류와 고정 이미지가 모두 맞아야 과거 실행의 자원도 회수한다.
+    if (imageName !== spec.image || record.descriptor.name !== `cm-${spec.prefix}-${record.runId}-${record.id}`)
+      throw new Error('시험 DB 종류와 고정 이미지 불일치');
     const expected = labels(record);
     if (!/^[a-f0-9]{64}$/u.test(item.Id) || item.Name !== `/${record.descriptor.name}`
       || (record.descriptor.containerId && item.Id !== record.descriptor.containerId)
       || LABELS.some(key => item.Config?.Labels?.[key] !== expected[key])
-      || item.Config?.Image !== IMAGE || item.HostConfig?.Binds?.length
+      || item.Config?.Image !== imageName || item.HostConfig?.Binds?.length
       || item.HostConfig?.Mounts?.length || !['bridge', 'default'].includes(item.HostConfig?.NetworkMode)
       || item.HostConfig?.Privileged || item.HostConfig?.VolumesFrom?.length || item.HostConfig?.Devices?.length
-      || !item.HostConfig?.AutoRemove || !item.HostConfig?.Tmpfs?.[DATA]
-      || Object.keys(item.HostConfig.Tmpfs).length !== 1
-      || item.HostConfig.Tmpfs[DATA].split(',').sort().join(',') !== 'nodev,nosuid,rw'
-      || !Array.isArray(item.Mounts) || item.Mounts.length > 1
-      || item.Mounts.some((mount: Record<string, unknown>) => mount.Type !== 'tmpfs' || mount.Destination !== DATA || mount.RW !== true))
+      || !item.HostConfig?.AutoRemove || Object.keys(item.HostConfig?.Tmpfs ?? {}).length !== paths.length
+      || paths.some(path => typeof item.HostConfig?.Tmpfs?.[path] !== 'string'
+        || item.HostConfig.Tmpfs[path].split(',').sort().join(',') !== spec.tmpfs[path]!.split(',').sort().join(','))
+      || !Array.isArray(item.Mounts) || item.Mounts.length > paths.length
+      || item.Mounts.some((mount: Record<string, unknown>) => mount.Type !== 'tmpfs' || !paths.includes(String(mount.Destination)) || mount.RW !== true))
       throw new Error('컨테이너 소유 정보 불일치');
-    const binding = item.HostConfig?.PortBindings?.['5432/tcp'];
-    if (Object.keys(item.HostConfig?.PortBindings ?? {}).some(key => key !== '5432/tcp')
-      || Object.keys(item.NetworkSettings?.Ports ?? {}).some(key => key !== '5432/tcp')
+    const binding = item.HostConfig?.PortBindings?.[portKey];
+    if (Object.keys(item.HostConfig?.PortBindings ?? {}).some(key => key !== portKey)
+      || Object.entries(item.NetworkSettings?.Ports ?? {}).some(([key, value]) => key !== portKey && (!spec.extraPorts.includes(key) || value !== null))
       || !Array.isArray(binding) || binding.length !== 1 || binding[0]?.HostIp !== '127.0.0.1'
       || !['', '0'].includes(binding[0]?.HostPort))
       throw new Error('Docker 연결 범위 불일치');
-    const published = item.NetworkSettings?.Ports?.['5432/tcp'];
+    const published = item.NetworkSettings?.Ports?.[portKey];
     let port = record.descriptor.hostPort ?? 0;
     if (requirePort || published) {
       if (!Array.isArray(published) || published.length !== 1 || published[0]?.HostIp !== '127.0.0.1'
@@ -158,18 +169,20 @@ export class PostgresResources {
       if (port < 1 || port > 65535 || (record.descriptor.hostPort && port !== record.descriptor.hostPort))
         throw new Error('Docker 포트 불일치');
     }
-    const image: unknown = JSON.parse(await this.command(record.descriptor.endpoint, ['image', 'inspect', IMAGE], signal ? { signal } : {}));
+    const image: unknown = JSON.parse(await this.command(record.descriptor.endpoint, ['image', 'inspect', imageName], signal ? { signal } : {}));
     if (!Array.isArray(image) || image.length !== 1 || image[0]?.Id !== item.Image
-      || !image[0]?.RepoDigests?.some((value: unknown) => typeof value === 'string' && value.endsWith(IMAGE.slice(IMAGE.indexOf('@')))))
+      || !image[0]?.RepoDigests?.some((value: unknown) => typeof value === 'string' && value.endsWith(imageName.slice(imageName.indexOf('@')))))
       throw new Error('Docker 이미지 불일치');
     if (requirePort) {
       // --tmpfs는 inspect.Mounts가 비어 있을 수 있으므로 실제 커널 마운트도 확인한다.
       const mountInfo = await this.command(record.descriptor.endpoint, ['exec', item.Id, 'cat', '/proc/self/mountinfo'], signal ? { signal } : {});
-      const mounts = mountInfo.trim().split('\n').map(line => line.split(' ')).filter(parts => parts[4] === DATA);
-      const actual = mounts[0];
-      if (mounts.length !== 1 || !actual || actual[actual.indexOf('-') + 1] !== 'tmpfs'
-        || !['rw', 'nosuid', 'nodev'].every(flag => actual[5]?.split(',').includes(flag)))
-        throw new Error('실제 PostgreSQL tmpfs 마운트를 확인할 수 없습니다.');
+      for (const path of paths) {
+        const mounts = mountInfo.trim().split('\n').map(line => line.split(' ')).filter(parts => parts[4] === path);
+        const actual = mounts[0];
+        if (mounts.length !== 1 || !actual || actual[actual.indexOf('-') + 1] !== 'tmpfs'
+          || !['rw', 'nosuid', 'nodev'].every(flag => actual[5]?.split(',').includes(flag)))
+          throw new Error('실제 시험 DB tmpfs 마운트를 확인할 수 없습니다.');
+      }
     }
     return { id: item.Id, port };
   }
@@ -187,63 +200,82 @@ export class PostgresResources {
     throw new Error('정리 후 컨테이너가 남아 있습니다.');
   }
 
-  async prepare(runId: string, ownerToken: string, signal: AbortSignal): Promise<{ environment: Record<string, string>; secrets: string[] }> {
-    if (this.preparing.has(runId)) throw new Error('같은 실행의 PostgreSQL 준비가 진행 중입니다.');
+  async prepare(runId: string, ownerToken: string, signal: AbortSignal, kinds: readonly DatabaseResourceKind[] = ['postgres-test']): Promise<{ environment: Record<string, string>; secrets: string[] }> {
+    if (this.preparing.has(runId)) throw new Error('같은 실행의 시험 DB 준비가 진행 중입니다.');
     this.preparing.add(runId);
+    try {
+      if (!kinds.length || new Set(kinds).size !== kinds.length || kinds.some(kind => !databaseResourceKinds.includes(kind)))
+        throw new Error('시험 DB 선언이 올바르지 않습니다.');
+      if (this.store.list(runId).length) throw new Error('같은 실행의 시험 DB 자원이 이미 기록됐습니다.');
+      const combined = { environment: {} as Record<string, string>, secrets: [] as string[] };
+      for (const kind of kinds) {
+        const prepared = await this.prepareOne(runId, ownerToken, signal, kind);
+        Object.assign(combined.environment, prepared.environment);
+        combined.secrets.push(...prepared.secrets);
+      }
+      return combined;
+    } finally {
+      this.preparing.delete(runId);
+    }
+  }
+
+  private async prepareOne(runId: string, ownerToken: string, signal: AbortSignal, kind: DatabaseResourceKind): Promise<{ environment: Record<string, string>; secrets: string[] }> {
+    const spec = databaseSpecs[kind];
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(360000)]);
     let record: ResourceRecord | undefined;
     try {
-      if (this.store.list(runId).length) throw new Error('같은 실행의 PostgreSQL 자원이 이미 기록됐습니다.');
       const { endpoint, daemonId } = await this.localDaemon(deadline);
       const id = randomUUID();
-      const password = randomBytes(32).toString('base64url');
-      record = { id, runId, kind: 'postgres-test', ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
-        state: 'intent', descriptor: { name: `cm-pg-${runId}-${id}`, image: IMAGE, endpoint, daemonId }, cleanup: null };
+      const password = `Cm9${randomBytes(24).toString('hex')}zA`;
+      record = { id, runId, kind, ownerTokenHash: createHash('sha256').update(ownerToken).digest('hex'),
+        state: 'intent', descriptor: { name: `cm-${spec.prefix}-${runId}-${id}`, image: spec.image, endpoint, daemonId }, cleanup: null };
       this.store.intent(record);
-      if (deadline.aborted) throw new Error('PostgreSQL 준비가 취소됐습니다.');
+      if (deadline.aborted) throw new Error('시험 DB 준비가 취소됐습니다.');
       const args = ['run', '--detach', '--rm', '--name', record.descriptor.name];
       for (const [key, value] of Object.entries(labels(record))) args.push('--label', `${key}=${value}`);
-      args.push('--publish', '127.0.0.1::5432', '--tmpfs', `${DATA}:rw,nosuid,nodev`,
-        '--env', 'POSTGRES_DB', '--env', 'POSTGRES_USER', '--env', 'POSTGRES_PASSWORD', IMAGE);
+      args.push('--publish', `127.0.0.1::${spec.port}`);
+      for (const [path, options] of Object.entries(spec.tmpfs)) args.push('--tmpfs', `${path}:${options}`);
+      const environment = spec.environment(password);
+      for (const key of Object.keys(environment)) args.push('--env', key);
+      args.push(spec.image);
       let response = '';
       record = this.update(record, 'creating');
       try {
         // CLI 종료와 외부 생성 완료를 구분한다. 응답 유실은 정리할 때에도 미확인 상태로 남는다.
-        response = (await this.command(endpoint, args, { env: { POSTGRES_DB: USER, POSTGRES_USER: USER, POSTGRES_PASSWORD: password },
+        response = (await this.command(endpoint, args, { env: environment,
           signal: deadline, timeoutMs: 300000 })).trim();
       } catch { /* 정확한 이름을 inspect해 응답 유실을 복구한다. */ }
       await this.sameDaemon(record, deadline);
       const item = await this.inspect(record, record.descriptor.name, deadline);
-      if (!item) throw new Error('PostgreSQL 생성 확인 실패');
+      if (!item) throw new Error('시험 DB 생성 확인 실패');
       const verified = await this.verify(record, item, true, deadline);
       if (response && response !== verified.id) throw new Error('Docker 생성 응답 ID 불일치');
       const descriptor: ResourceDescriptor = { ...record.descriptor, containerId: verified.id, hostPort: verified.port };
       record = this.update(record, 'created', descriptor);
-      if (deadline.aborted) throw new Error('PostgreSQL 준비가 취소됐습니다.');
+      if (deadline.aborted) throw new Error('시험 DB 준비가 취소됐습니다.');
       let ready = false;
-      for (let attempt = 0; attempt < 30; attempt++) {
-        if (deadline.aborted) throw new Error('PostgreSQL 준비가 취소됐습니다.');
+      for (let attempt = 0; attempt < spec.readyAttempts; attempt++) {
+        if (deadline.aborted) throw new Error('시험 DB 준비가 취소됐습니다.');
         try {
-          await this.command(endpoint, ['exec', verified.id, 'pg_isready', '-h', '127.0.0.1', '-U', USER, '-d', USER], { signal: deadline });
-          const selected = await this.command(endpoint, ['exec', '--env', 'PGPASSWORD', verified.id, 'psql', '-h', '127.0.0.1', '-U', USER, '-d', USER,
-            '-tAc', 'SELECT 1'], { env: { PGPASSWORD: password }, signal: deadline });
+          const probe = spec.probe(password);
+          const args = ['exec', ...(probe.input ? ['--interactive'] : [])];
+          for (const key of Object.keys(probe.env ?? {})) args.push('--env', key);
+          args.push(verified.id, ...probe.args);
+          const selected = await this.command(endpoint, args, { ...probe, signal: deadline });
           if (selected.trim() !== '1') throw new Error('고정 조회 결과 불일치');
           await bounded(() => this.driver.probe(verified.port), 2000, deadline);
           ready = true;
           break;
         } catch { await new Promise(resolve => setTimeout(resolve, 500)); }
       }
-      if (!ready) throw new Error('PostgreSQL 준비 확인 실패');
+      if (!ready) throw new Error('시험 DB 준비 확인 실패');
       record = this.update(record, 'ready');
-      const url = `postgresql://${USER}:${encodeURIComponent(password)}@127.0.0.1:${verified.port}/${USER}`;
-      return { environment: { CHECKMATE_PG_MANAGED: '1', CHECKMATE_PG_ADMIN_URL: url }, secrets: [password, url] };
+      return databaseConnection(kind, verified.port, password);
     } catch {
       if (record && !['intent', 'ready'].includes(record.state)) {
         try { this.update(record, 'uncertain'); } catch { /* 원래 기록을 보존한다. */ }
       }
-      throw new Error('PostgreSQL 격리 자원 준비 실패');
-    } finally {
-      this.preparing.delete(runId);
+      throw new Error(`${databaseResourceNames[kind]} 격리 자원 준비 실패`);
     }
   }
 
@@ -278,3 +310,6 @@ export class PostgresResources {
     return { verified: latest.every(resource => resource.state === 'cleaned' && resource.cleanup?.verified), resources: latest };
   }
 }
+
+// 기존 PostgreSQL 호출자는 같은 기본 종류와 소유권 계약을 계속 사용한다.
+export class PostgresResources extends DatabaseResources {}

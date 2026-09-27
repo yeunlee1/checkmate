@@ -5,11 +5,13 @@ import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { ResourceStore, type ResourceRecord } from '../packages/engine/src/저장/자원저장.js';
 import { createStoreFixture } from './저장시험자료.js';
+import { databaseResourceKinds } from '@checkmate/contracts/resources';
+import { databaseSpecs } from '../packages/engine/src/자원/데이터베이스종류.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-test('생성 전 의도는 재개방 뒤 유지되고 소유권 변경과 근거 없는 완료를 거절한다', async () => {
+test.each(databaseResourceKinds)('%s 생성 의도는 재개방 뒤 유지되고 소유권 변경과 근거 없는 완료를 거절한다', async kind => {
   const files = await createStoreFixture();
   let db = connectStore(files.dbPath);
   cleanup.push(async () => { if (db.open) db.close(); await files.cleanup(); });
@@ -23,13 +25,15 @@ test('생성 전 의도는 재개방 뒤 유지되고 소유권 변경과 근거
   const runId = randomUUID();
   runs.admitRun({ projectId: plan.project.id, planId: plan.plan.id, runId, requestId: randomUUID(), requestHash: 'e'.repeat(64), createdAt: new Date().toISOString() });
   const id = randomUUID();
-  const intent: ResourceRecord = { id, runId, kind: 'postgres-test', ownerTokenHash: 'f'.repeat(64), state: 'intent', cleanup: null,
-    descriptor: { name: `cm-pg-${runId}-${id}`, image: `postgres:17-alpine@sha256:${'a'.repeat(64)}`, endpoint: 'unix:///var/run/docker.sock', daemonId: 'test-daemon' } };
+  const spec = databaseSpecs[kind];
+  const intent: ResourceRecord = { id, runId, kind, ownerTokenHash: 'f'.repeat(64), state: 'intent', cleanup: null,
+    descriptor: { name: `cm-${spec.prefix}-${runId}-${id}`, image: spec.image, endpoint: 'unix:///var/run/docker.sock', daemonId: 'test-daemon' } };
   new ResourceStore(db).intent(intent);
   db.close(); db = connectStore(files.dbPath);
   const store = new ResourceStore(db);
   expect(store.list(runId)).toEqual([intent]);
   expect(() => store.intent(intent)).toThrow();
+  expect(() => store.intent({ ...intent, kind: kind === 'postgres-test' ? 'mysql-test' : 'postgres-test' })).toThrow();
   expect(() => store.intent({ ...intent, id: randomUUID(), runId: randomUUID() })).toThrow();
   expect(() => store.update(id, ['intent'], { state: 'created', descriptor: { ...intent.descriptor, daemonId: 'another-daemon' }, cleanup: null })).toThrow();
   store.update(id, ['intent'], { ...intent, state: 'creating' });

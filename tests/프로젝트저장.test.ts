@@ -1,5 +1,6 @@
 // 합성 SQLite에서 프로젝트 카탈로그와 계획 및 승인 저장의 경계를 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
+import { databaseResourceKinds, databaseResourceNames } from '@checkmate/contracts/resources';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
@@ -44,6 +45,20 @@ async function fixture() {
   };
   return { files, db, source, store: new ProjectStore(db), initial: snapshot(files.directory, source) };
 }
+
+test('선택한 여섯 DB의 생성과 쓰기 및 사용 조건을 승인 계획에 표시한다', async () => {
+  const { source, files, store } = await fixture();
+  source.project.commands[0]!.resources = [...databaseResourceKinds];
+  const input = snapshot(files.directory, source);
+  store.register(input);
+  const plan = store.inspect(input, 'quick');
+  for (const name of Object.values(databaseResourceNames)) expect(plan.resourceEffects.join('\n')).toContain(name);
+  expect(plan.resourceEffects.join('\n')).toContain('EULA');
+  expect(plan.resourceEffects.join('\n')).toContain('Oracle Database Free');
+  expect(plan.needsApproval).toBe(true);
+  store.approve(plan.planId, plan.fingerprint);
+  expect(store.inspect(input, 'quick').needsApproval).toBe(false);
+});
 
 test('등록 재사용과 ID, 경로, 저장소 식별자 및 이름 충돌을 구분한다', async () => {
   const { files, db, source, store, initial } = await fixture();

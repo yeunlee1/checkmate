@@ -18,7 +18,7 @@ import { rejectLinks } from '../연결/개인경로.js';
 import type { EvidenceStore } from '../저장/증거저장.js';
 import type { EventStore } from '../저장/이벤트저장.js';
 import type { ResourceRecord } from '../저장/자원저장.js';
-import type { PostgresResources } from '../자원/격리데이터베이스.js';
+import type { DatabaseResources } from '../자원/격리데이터베이스.js';
 import type { AdapterEvent } from '@checkmate/contracts/events';
 import type { CommandObservation, FixedCommand, WorkerConfig } from '../작업/검사작업.js';
 import { hideSecrets, hideSecretsInNdjson, hideSecretsInValue } from '../작업/비밀가림.js';
@@ -39,7 +39,7 @@ const commandStartSchema = z.strictObject({ kind: z.literal('command-start'), co
 const secretPattern = /authorization|cookie|bearer|token|password|secret|api[ _-]?key/iu;
 const uuid = z.uuid();
 type Options = { runsRoot: string; evidenceStore: EvidenceStore; eventStore: EventStore;
-  resources?: Pick<PostgresResources, 'prepare' | 'cleanup'> };
+  resources?: Pick<DatabaseResources, 'prepare' | 'cleanup'> };
 type ObservedWorker = { exitCode: number | null; observations: CommandObservation[]; protocolValid: boolean };
 
 function scrub(value: unknown, secrets: readonly string[] = []): unknown {
@@ -255,7 +255,8 @@ export function createProjectExecutor(options: Options): RunExecutor {
     catch { return candidate; }
     const config: WorkerConfig = { runId: initial.runId, sourceRoot: snapshot.realPath,
       evidenceRoot, ownerToken, commands: fixed.commands };
-    const needsResource = fixed.commands.some((command) => command.resources?.includes('postgres-test'));
+    const resourceKinds = [...new Set(fixed.commands.flatMap(command => command.resources ?? []))];
+    const needsResource = resourceKinds.length > 0;
     if (needsResource && !options.resources) return { ...candidate, state: 'blocked' };
     let prepared = !needsResource;
     let resourceCleaned = !needsResource;
@@ -264,7 +265,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
     let resourcesAfterCleanup: ResourceRecord[] = [];
     try {
       if (needsResource) {
-        const resource = await options.resources!.prepare(initial.runId, ownerToken, signal);
+        const resource = await options.resources!.prepare(initial.runId, ownerToken, signal, resourceKinds);
         config.resourceEnvironment = resource.environment;
         config.resourceSecrets = resource.secrets;
         prepared = true;
@@ -287,7 +288,7 @@ export function createProjectExecutor(options: Options): RunExecutor {
     if (!observed) return { ...candidate, state: workerAttempted || !resourceCleaned ? 'unverifiable' : 'blocked',
       cleanupVerified: !workerAttempted && resourceCleaned, environmentVerified: false };
     const secrets = config.resourceSecrets ?? [];
-    if (needsResource && resourcesAfterCleanup.some((item) => item.runId !== initial.runId || item.kind !== 'postgres-test'))
+    if (needsResource && resourcesAfterCleanup.some((item) => item.runId !== initial.runId || !resourceKinds.includes(item.kind)))
       resourceCleaned = false;
     candidate.workerExitCode = observed.exitCode;
     candidate.state = observed.exitCode === null ? 'unverifiable' : 'finished';

@@ -40,7 +40,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     commands: [{ id: 'quick', title: '합성 명령 실행', runtime: 'node', entry: 'scripts/검사.mjs', args: [],
       timeoutMs: 10000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' },
       { id: 'database', title: '시험 DB 승인 안내 검증', runtime: 'node', entry: 'scripts/검사.mjs', args: [],
-        timeoutMs: 10000, env: {}, writes: [], resultFormat: 'ndjson', resources: ['postgres-test'] }],
+        timeoutMs: 10000, env: {}, writes: [], resultFormat: 'ndjson', resources: ['postgres-test', 'mysql-test', 'mariadb-test', 'mssql-test', 'oracle-test', 'mongodb-test'] }],
     profiles: [{ id: 'quick', title: '빠른 검사', checkIds: ['logic-1'] },
       { id: 'database', title: '시험 DB 계획', checkIds: ['database-1'] }] }));
   await writeFile(join(project, 'checkmate', '요구사항.json'), JSON.stringify([
@@ -163,7 +163,12 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await page.getByTestId('profile-select').selectOption('database');
   await page.getByTestId('inspect-plan').click();
   await expect(page.getByText('Creates a new disposable PostgreSQL container', { exact: false })).toBeVisible();
-  await expect(page.getByText('Allows migrations, writes, and deletion', { exact: false })).toBeVisible();
+  for (const name of ['MySQL', 'MariaDB', 'SQL Server', 'Oracle', 'MongoDB']) {
+    await expect(page.getByText(`Creates a new disposable ${name} container`, { exact: false })).toBeVisible();
+  }
+  await expect(page.getByText('Creates SQL Server Developer under', { exact: false })).toBeVisible();
+  await expect(page.getByText('Creates a synthetic test database under the Oracle', { exact: false })).toBeVisible();
+  await expect(page.getByText('Allows migrations, writes, and deletion', { exact: false }).first()).toBeVisible();
   await expect(page.getByTestId('start-run')).toBeDisabled();
   await page.getByTestId('nav-history').click();
   await page.locator('.history-list .history-open').first().click();

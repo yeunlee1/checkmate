@@ -1,9 +1,10 @@
 // 실행이 소유한 시험 DB를 보여주고 중단된 실행의 선택적 정리를 제공한다.
 import { useEffect, useState } from 'react';
 import type { ApiMethod } from '@checkmate/contracts/api';
+import { databaseResourceNames, type DatabaseResourceKind } from '@checkmate/contracts/resources';
 import { useLanguage, text } from './언어.js';
 
-type Resource = { id: string; state: string; descriptor: { name: string; containerId?: string; hostPort?: number };
+type Resource = { id: string; kind: DatabaseResourceKind; state: string; descriptor: { name: string; containerId?: string; hostPort?: number };
   cleanup: { verified: boolean; reason: string } | null };
 type Props = { runId: string; canCleanup: boolean; disabled: boolean;
   request: <T>(method: ApiMethod, input: Record<string, unknown>) => Promise<T> };
@@ -76,9 +77,9 @@ export function TestResources({ runId, canCleanup, disabled, request }: Props) {
   };
   return <section className="subsection" aria-label={text('시험 DB 자원', 'Test database resources')}>
     <h3>{text('시험 DB', 'Test databases')}</h3>
-    <p>{text('이 실행이 만든 임시 PostgreSQL 데이터베이스와 정리 상태입니다.',
-      'Temporary PostgreSQL databases created by this run and their cleanup status.')}</p>
-    {items.map(item => <div className="command-card" key={item.id}><strong>PostgreSQL · {labels[item.state] ?? item.state}</strong>
+    <p>{text('이 실행이 만든 임시 데이터베이스와 정리 상태입니다.',
+      'Temporary databases created by this run and their cleanup status.')}</p>
+    {items.map(item => <div className="command-card" key={item.id}><strong>{databaseResourceNames[item.kind] ?? item.kind} · {labels[item.state] ?? item.state}</strong>
       <p><code>{item.descriptor.name}</code></p>{item.descriptor.containerId && <p className="path-line">{text('컨테이너', 'Container')} <code>{item.descriptor.containerId}</code></p>}
       {item.descriptor.hostPort && <p className="muted">{text('이 컴퓨터의 시험 포트', 'Local test port')} {item.descriptor.hostPort}</p>}
       {item.cleanup?.reason && <p>{item.cleanup.reason}</p>}</div>)}

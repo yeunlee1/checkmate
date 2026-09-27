@@ -175,8 +175,11 @@ function RecordedProfile({ id, project }: { id: string; project: ProjectInfo | n
 }
 
 function resourceEffectText(effect: string): string {
+  const database = /^새 일회용 (PostgreSQL|MySQL|MariaDB|SQL Server|Oracle|MongoDB) 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다\.$/u.exec(effect)?.[1];
+  if (database) return text(effect, `Creates a new disposable ${database} container and connects through a dynamic port on this computer.`);
   const effects: Translations = {
-    '새 일회용 PostgreSQL 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.': ['새 일회용 PostgreSQL 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.', 'Creates a new disposable PostgreSQL container and connects through a dynamic port on this computer.'],
+    'SQL Server Developer의 개발·시험 전용 사용 조건과 EULA에 동의하여 생성합니다.': ['SQL Server Developer의 개발·시험 전용 사용 조건과 EULA에 동의하여 생성합니다.', 'Creates SQL Server Developer under its development and testing terms and EULA.'],
+    'Oracle Database Free의 사용 조건으로 합성 시험 DB를 생성합니다.': ['Oracle Database Free의 사용 조건으로 합성 시험 DB를 생성합니다.', 'Creates a synthetic test database under the Oracle Database Free terms.'],
     '컨테이너 안의 합성 DB 전체에 마이그레이션·쓰기·삭제를 허용하며, 실행 종료 시 컨테이너와 자료를 제거합니다. 기존 DB와 볼륨은 연결하지 않습니다.': ['컨테이너 안의 합성 DB 전체에 마이그레이션·쓰기·삭제를 허용하며, 실행 종료 시 컨테이너와 자료를 제거합니다. 기존 DB와 볼륨은 연결하지 않습니다.', 'Allows migrations, writes, and deletion throughout the synthetic database in the container. Removes the container and its data when the run ends. Existing databases and volumes are not connected.'],
   };
   const translation = effects[effect];
