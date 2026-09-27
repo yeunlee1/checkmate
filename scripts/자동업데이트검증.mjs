@@ -181,5 +181,5 @@ finally {
   server.closeAllConnections(); await new Promise(done => server.close(done));
   report.requests = requests; report.finishedAt = new Date().toISOString();
   await writeFile(join(root, '검증결과.json'), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify({ passed: report.passed, report: join(root, '검증결과.json') }));
+  console.log(JSON.stringify({ passed: report.passed, report: join(root, '검증결과.json'), phases: report.phases, cleanupVerified: report.cleanupVerified ?? false, error: report.error ?? report.cleanupError ?? null }));
 }

@@ -80,6 +80,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: update-acceptance
+          include-hidden-files: true
           path: |
             .runtime/update-*/검증결과.json
             .runtime/update-*/상태.json
@@ -93,6 +94,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-update
+          include-hidden-files: true
           path: |
             ${{ steps.package.outputs.artifacts }}/CheckMate-개발설치.exe
             ${{ steps.package.outputs.artifacts }}/*-full.nupkg
