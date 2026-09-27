@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 사람과 AI가 같은 로컬 서비스의 계획과 실행 및 결과를 사용하게 한다.
 import { Command, CommanderError } from 'commander';
+import { engineVersion } from './버전.js';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -18,7 +19,7 @@ const write = (data: unknown, message: string) => {
   process.stdout.write(jsonMode ? `${JSON.stringify({ apiVersion: 1, ok: true, data })}\n` : `${message}\n`);
 };
 
-program.name('checkmate').description('사람과 AI가 함께 사용하는 로컬 검증 도구').version('0.1.0-alpha.1')
+program.name('checkmate').description('사람과 AI가 함께 사용하는 로컬 검증 도구').version(engineVersion)
   .option('--json', 'JSON 결과를 출력한다.')
   .option('--data-dir <path>', '체크메이트 전용 자료 폴더를 지정한다.')
   .exitOverride()

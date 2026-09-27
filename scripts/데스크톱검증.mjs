@@ -201,6 +201,9 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1), false);
   await page.screenshot({ path: join(artifacts, '도움말.png'), fullPage: true });
   await page.getByTestId('nav-settings').click();
+  await expect(page.getByRole('heading', { name: '앱 업데이트', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '업데이트 확인', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '재시작하여 업데이트', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: '현재 자료 백업', exact: true }).click();
   await page.getByText('백업 지문', { exact: true }).click();
   await expect(page.getByRole('button', { name: '백업 지문 복사', exact: true })).toBeVisible({ timeout: 30000 });

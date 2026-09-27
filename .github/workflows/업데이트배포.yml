@@ -1,0 +1,134 @@
+name: Windows 업데이트 제작과 배포
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - '.github/workflows/업데이트배포.yml'
+      - 'scripts/릴리스*.mjs'
+      - 'scripts/릴리스서명.ps1'
+      - 'forge.config.cjs'
+      - 'scripts/개발설치본.mjs'
+      - 'scripts/자동업데이트검증.mjs'
+      - 'packages/**'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checkmate-release-${{ github.ref_type == 'tag' && 'stable' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
+          cache: npm
+      - name: 버전과 정식 배포 계보 확인
+        shell: pwsh
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ($env:RELEASE_REF_TYPE -eq 'tag') { node scripts/릴리스검증.mjs source $env:RELEASE_TAG }
+          else { node scripts/릴리스검증.mjs source }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - run: npm ci --ignore-scripts
+      - run: node node_modules/electron/install.js
+      - run: npx playwright install chromium
+      - run: npm test
+      - run: npm run desktop:test
+      - name: 정식 배포 인증서 준비
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          CHECKMATE_SIGN_PFX_BASE64: ${{ secrets.CHECKMATE_SIGN_PFX_BASE64 }}
+          CHECKMATE_SIGN_PFX_PASSWORD: ${{ secrets.CHECKMATE_SIGN_PFX_PASSWORD }}
+        run: ./scripts/릴리스서명.ps1 prepare
+      - name: 설치본과 동봉 엔진 제작
+        id: package
+        run: node scripts/개발설치본.mjs
+      - name: 포장 앱과 업데이트 목록 검증
+        shell: pwsh
+        env:
+          BUILD_REPORT: ${{ steps.package.outputs.report }}
+        run: |
+          $report = Get-Content -LiteralPath $env:BUILD_REPORT -Raw | ConvertFrom-Json
+          node scripts/포장앱검증.mjs $report.packagePath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/릴리스검증.mjs artifacts $env:BUILD_REPORT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 합성 설치본 버전 간 업데이트 수용
+        env:
+          BUILD_REPORT: ${{ steps.package.outputs.report }}
+        run: node scripts/자동업데이트검증.mjs "$env:BUILD_REPORT"
+      - name: 업데이트 수용 근거 보관
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: update-acceptance
+          path: |
+            .runtime/update-*/검증결과.json
+            .runtime/update-*/상태.json
+            .runtime/update-*/앱오류.txt
+            .runtime/update-*/앱표준오류.log
+            .runtime/update-*/CheckMateFixture*/SquirrelSetup.log
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: 검증된 설치 산출물 보관
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-update
+          path: |
+            ${{ steps.package.outputs.artifacts }}/CheckMate-개발설치.exe
+            ${{ steps.package.outputs.artifacts }}/*-full.nupkg
+            ${{ steps.package.outputs.artifacts }}/RELEASES
+            ${{ steps.package.outputs.artifacts }}/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: 이번 작업의 서명 인증서 제거
+        if: always() && github.event_name == 'push' && github.ref_type == 'tag'
+        shell: pwsh
+        run: ./scripts/릴리스서명.ps1 cleanup
+  publish:
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: windows-update
+          path: .runtime/release
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
+      - name: 지문 재확인과 초안 게시
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/릴리스검증.mjs source "$RELEASE_TAG"
+          cd .runtime/release
+          sha256sum --check SHA256SUMS.txt
+          cd ../..
+          node scripts/릴리스게시.mjs "$RELEASE_TAG" .runtime/release

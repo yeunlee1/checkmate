@@ -1,5 +1,5 @@
 // 데스크톱 창과 제한된 로컬 서비스 연결 및 사람의 폴더 선택을 관리한다.
-import { app, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
+import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
@@ -9,6 +9,8 @@ import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contra
 import { callService, initializeLocalStore } from '@checkmate/engine/client';
 import { exportRunHtml } from '@checkmate/engine/report';
 import { ensureLauncher, handleSquirrelEvent, hasOwnedDataRoot } from './설치연결.js';
+import { installationRoot } from '@checkmate/engine/update-lock';
+import { UpdateController } from './업데이트.js';
 
 let squirrelExitCode: number | null = null;
 try { if (app.isPackaged && handleSquirrelEvent(process.argv[1])) squirrelExitCode = 0; }
@@ -51,6 +53,18 @@ else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus(); });
   void app.whenReady().then(async () => {
+  const updates = new UpdateController(autoUpdater, app.isPackaged && process.platform === 'win32' ? await installationRoot() : null);
+  try { await updates.recover(); } catch { /* 소유권이 불명확하면 기존 잠금을 보존한다. */ }
+  ipcMain.handle('checkmate:update', async (event, action: unknown) => {
+    checkSender(event);
+    if (action === 'status') return updates.status();
+    if (action === 'check') return updates.check();
+    if (action === 'apply') return updates.apply();
+    throw new ServiceError('invalid-input');
+  });
+  const firstUpdateCheck = setTimeout(() => { void updates.check(); }, 60000);
+  const updateInterval = setInterval(() => { void updates.check(); }, 30 * 60 * 1000);
+  app.on('will-quit', () => { clearTimeout(firstUpdateCheck); clearInterval(updateInterval); void updates.close(); });
   app.setAppUserModelId('com.squirrel.CheckMate.CheckMate');
   Menu.setApplicationMenu(null);
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

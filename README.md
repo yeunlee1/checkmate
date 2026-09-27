@@ -147,7 +147,7 @@ npm test                 # 빌드, 타입 검사, 회귀 검사
 npm run desktop:test     # 실제 Electron 화면 흐름 검사
 ```
 
-Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. 코드 서명, 깨끗한 Windows에서의 설치, 버전 간 업데이트 수용은 정식 출시 전에 남은 작업입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
+Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. Windows 설치본의 [자동 업데이트와 GitHub Actions 배포](문서/자동업데이트.md)를 제공합니다. 정식 코드 서명과 공개 릴리스, 깨끗한 Windows에서의 설치 수용은 별도 출시 조건입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
 
 ## 더 알아보기.
 

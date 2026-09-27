@@ -1,4 +1,4 @@
-// 검증된 Node와 엔진을 동봉한 서명 없는 Windows 개발 설치본을 새 폴더에 만든다.
+// 검증된 Node와 엔진을 동봉하고 설정된 인증서로 서명하는 Windows 설치본을 만든다.
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync } from 'node:fs';
@@ -173,7 +173,7 @@ async function main() {
     await mkdir(appRoot);
     const desktopPackage = JSON.parse(await readFile(join(root, 'packages', 'desktop', 'package.json'), 'utf8'));
     const appPackage = {
-      name: 'checkmate', productName: 'CheckMate', version: '0.1.0-alpha.1',
+      name: 'checkmate', productName: 'CheckMate', version: desktopPackage.version,
       author: 'yeunlee1', description: desktopPackage.description, type: 'module',
       main: 'dist/main/메인.js', devDependencies: { electron: '44.4.5' },
       config: { forge: forgePath },
@@ -208,10 +208,19 @@ async function main() {
     const artifacts = made.flatMap(result => result.artifacts.map(path => join(runRoot, relative(asciiAlias, path))));
     if (!artifacts.some(path => basename(path) === 'CheckMate-개발설치.exe')) throw new Error('예상한 개발 설치 파일이 생성되지 않았습니다.');
     report.packagePath = packagePath;
+    report.version = desktopPackage.version;
     report.artifacts = [];
     for (const path of artifacts) report.artifacts.push({ path, sha256: await sha256(path) });
+    if (process.env.CHECKMATE_SIGN_THUMBPRINT) {
+      const files = [join(packagePath, 'CheckMate.exe'), artifacts.find(path => basename(path) === 'CheckMate-개발설치.exe')];
+      const encoded = Buffer.from(JSON.stringify(files), 'utf8').toString('base64');
+      const script = `$ErrorActionPreference='Stop'; $files=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))|ConvertFrom-Json; foreach($file in $files) { $s=Get-AuthenticodeSignature -LiteralPath $file; if($s.Status -ne 'Valid' -or !$s.TimeStamperCertificate -or $s.SignerCertificate.Thumbprint -ne $env:CHECKMATE_SIGN_THUMBPRINT) { throw 'signature-invalid' } }`;
+      command('pwsh', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+      report.signed = true;
+    }
     report.source.dirtyAtEnd = git(['status', '--porcelain=v1', '--untracked-files=normal']).length > 0;
     report.status = 'passed';
+    if (process.env.GITHUB_OUTPUT) await writeFile(process.env.GITHUB_OUTPUT, `report=${reportPath}\nartifacts=${dirname(artifacts.find(path => basename(path) === 'RELEASES') ?? artifacts[0])}\n`, { flag: 'a' });
   } catch (error) {
     report.status = 'failed';
     report.error = error instanceof Error ? error.message : String(error);
