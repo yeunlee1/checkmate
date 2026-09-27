@@ -131,7 +131,10 @@ await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.stat
   await waitFor(async () => {
     const id = ++lastCommand; await writeFile(commandFile, JSON.stringify({ id, action: 'check' }));
     await waitFor(async () => (await state()).command === id, 20000);
-    return ['checking', 'downloading', 'error'].includes((await state()).state);
+    const value = await state();
+    // 다른 프로세스가 종료되는 순간 관측이 불명확하면 제품은 안전하게 보류한다.
+    if (value.reason === 'check-unavailable') report.observationDeferrals = (report.observationDeferrals ?? 0) + 1;
+    return ['checking', 'downloading'].includes(value.state) || value.reason === 'update-failed';
   }, 120000);
   await waitFor(async () => (await state()).state === 'error');
   assert.ok(requests.some(name => name.endsWith('.nupkg')));
