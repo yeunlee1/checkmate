@@ -47,7 +47,7 @@ async function main() {
     await collect(join(engine, 'dist'));
     const helper = join(engine, 'native', '작업보호.exe');
     if (!(await lstat(helper)).isFile()) throw new Error('Windows 작업 보호 helper가 없습니다.');
-    files.push(helper);
+    files.push(helper, join(engine, 'package.json'));
     const sha256 = {};
     for (const source of files.sort()) {
       const name = relative(engine, source).replaceAll('\\', '/');
@@ -58,7 +58,6 @@ async function main() {
       if (await hash(target) !== before || await hash(source) !== before) throw new Error(`실행물 복사 중 내용이 달라졌습니다. ${name}`);
       sha256[name] = before;
     }
-    await writeFile(join(output, 'package.json'), JSON.stringify({ type: 'module' }) + '\n', { flag: 'wx' });
     const cli = join(output, 'dist', '명령.js');
     const doctor = JSON.parse(await command(process.execPath, [cli, '--json', 'doctor']));
     if (!doctor.ok || !doctor.data.supportedRuntime) throw new Error('고정 CLI의 실행 환경 진단이 실패했습니다.');

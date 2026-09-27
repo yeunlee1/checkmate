@@ -6,9 +6,12 @@ import { VisualEvidence, parseDesignEvidence } from './증거시각화.js';
 import type { DesignEvidence, VisualEvidenceProps } from './증거시각화.js';
 import { Help } from './도움말.js';
 import { TestResources } from './시험자원.js';
+import { UpdateSettings } from './업데이트설정.js';
+import type { UpdateState } from '../main/업데이트.js';
 import { useLanguage, text } from './언어.js';
 
 type Bridge = {
+  update(action: 'status' | 'check' | 'apply'): Promise<UpdateState>;
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
   chooseDirectory(purpose?: 'backup' | 'restore'): Promise<string | null>;
   chooseReport(): Promise<string | null>;
@@ -796,6 +799,7 @@ export function App() {
                   <td>{gap.state === 'resolved' ? text('보완됨', 'Resolved') : gap.state === 'open' ? text('보완 필요', 'Needs action') : gap.status ? label(caseLabels, gap.status) : text('미확인', 'Unconfirmed')}</td></tr>)}</tbody></table></div>
                 <p className="page-count">{gaps.length} / {gapsTotal}</p>{gapsCursor && <button type="button" className="secondary" onClick={() => void action('more-gaps', () => loadProjectGaps(project.id, gapsCursor))} disabled={!!busy}>{text('항목 더 보기', 'Show more items')}</button>}</>}
           </section>}
+          {!loading && page === 'settings' && <UpdateSettings />}
           {!loading && serviceReady && page === 'settings' && <section className="panel"><div className="panel-heading"><div><h2>{text('로컬 연결', 'Local connection')}</h2><p>{text('이 앱과 AI 도구가 같은 검사 이력을 읽습니다.', 'This app and AI tools read the same check history.')}</p></div></div>
             {connection ? <dl className="detail-grid settings-grid"><div><dt>{text('버전', 'Version')}</dt><dd>{connection.version}</dd></div><div><dt>{text('데이터 위치', 'Data location')}</dt><dd className="path-line">{connection.dataPath}</dd></div>
               <div><dt>{text('MCP 실행 정보', 'MCP launch details')}</dt><dd className="path-line"><details className="technical-detail"><summary>{text('명령과 인자 보기', 'Show command and arguments')}</summary><code>{text('명령', 'Command')} {connection.mcpCommand.command}</code><br />

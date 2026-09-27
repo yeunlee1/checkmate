@@ -16,6 +16,7 @@ import { ResourceStore } from '../저장/자원저장.js';
 import { DatabaseResources } from '../자원/격리데이터베이스.js';
 import { createProjectExecutor } from './검사실행기.js';
 import { ProductService } from './제품서비스.js';
+import { assertInstallationAvailable } from '../연결/업데이트잠금.js';
 
 const ownerSchema = z.strictObject({ id: z.uuid(), pid: z.number().int().positive(), startedAt: z.iso.datetime() });
 async function acquire(paths: DataPaths): Promise<() => Promise<void>> {
@@ -57,6 +58,7 @@ async function acquire(paths: DataPaths): Promise<() => Promise<void>> {
 }
 
 export async function startLocalService(root?: string, idleMs = 60000): Promise<{ close: () => Promise<void>; product: ProductService; paths: DataPaths }> {
+  await assertInstallationAvailable();
   const paths = dataPaths(root);
   await prepareDataPaths(paths);
   const release = await acquire(paths);

@@ -1,5 +1,6 @@
 // 프로젝트 등록과 승인된 실행 및 결과 조회를 모든 입구에 공통으로 제공한다.
 import { createHash, randomUUID } from 'node:crypto';
+import { engineVersion } from '../버전.js';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { apiInputs, errorResponse, humanMethods, ServiceError } from '@checkmate/contracts/api';
@@ -67,7 +68,7 @@ export class ProductService {
     switch (request.method) {
       case 'capabilities':
         apiInputs.capabilities.parse(raw);
-        return { version: '0.1.0-alpha.1', apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
+        return { version: engineVersion, apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
           connection: this.paths ? { dataRoot: this.paths.root } : null,
           capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images'],
           databaseResources: databaseResourceKinds,

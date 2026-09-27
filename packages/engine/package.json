@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./update-lock": {
+      "types": "./dist/연결/업데이트잠금.d.ts",
+      "import": "./dist/연결/업데이트잠금.js"
+    },
     "./client": {
       "types": "./dist/서비스/클라이언트.d.ts",
       "import": "./dist/서비스/클라이언트.js"

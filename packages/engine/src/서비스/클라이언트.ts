@@ -9,6 +9,7 @@ import type { ApiRequest, ApiResponse } from '@checkmate/contracts/api';
 import { dataPaths, prepareDataPaths } from '../연결/개인경로.js';
 import { requestLocal } from '../연결/로컬통신.js';
 import type { ClientRole } from '../연결/로컬통신.js';
+import { assertInstallationAvailable } from '../연결/업데이트잠금.js';
 
 export type ClientOptions = { dataRoot?: string; nodeExecutable?: string; serviceEntry?: string };
 const pending = new Map<string, Promise<ApiResponse>>();
@@ -22,10 +23,12 @@ function missingFeatures(data: unknown): string[] {
   ];
 }
 export async function initializeLocalStore(options: ClientOptions = {}): Promise<void> {
+  await assertInstallationAvailable(options.nodeExecutable);
   await prepareDataPaths(dataPaths(options.dataRoot));
 }
 
 export async function connectService(options: ClientOptions = {}): Promise<ApiResponse> {
+  await assertInstallationAvailable(options.nodeExecutable);
   const paths = dataPaths(options.dataRoot);
   const existing = pending.get(paths.root);
   if (existing) return existing;

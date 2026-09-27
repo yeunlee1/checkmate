@@ -1,5 +1,6 @@
 // 로컬 SQLite 파일의 출처와 스키마를 확인한 뒤 저장 연결을 연다.
 import { statSync } from 'node:fs';
+import { engineVersion } from '../버전.js';
 import { dirname, isAbsolute } from 'node:path';
 import Database from 'better-sqlite3';
 import { schemaChecksum, schemaSql, schemaTables, schemaVersion } from './스키마.js';
@@ -69,7 +70,7 @@ export function connectStore(path: string): Database.Database {
       db.transaction(() => {
         db!.exec(schemaSql);
         db!.prepare('INSERT INTO schema_migrations (version, checksum, applied_at, app_version) VALUES (?, ?, ?, ?)')
-          .run(schemaVersion, schemaChecksum, new Date().toISOString(), '0.1.0-alpha.1');
+          .run(schemaVersion, schemaChecksum, new Date().toISOString(), engineVersion);
       })();
     }
     return db;
