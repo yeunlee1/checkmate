@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
+import { databaseResourceKinds, databaseEnvironmentPrefixes, type DatabaseResourceKind } from '@checkmate/contracts/resources';
 import { readProjectSource } from '../packages/engine/src/프로젝트/원본읽기.js';
 import { createProjectExecutor } from '../packages/engine/src/서비스/검사실행기.js';
 import { resultSummary, compactRepairCase } from '../packages/engine/src/서비스/조회결과.js';
@@ -36,9 +37,11 @@ import { join } from 'node:path';
 const mode = process.argv[2];
 const id = process.argv[3];
 const declared = process.argv[4] === 'yes';
-const value = process.env.CHECKMATE_PG_ADMIN_URL;
+const prefix = process.argv[5] ?? 'CHECKMATE_PG_';
+const value = process.env[prefix + (prefix === 'CHECKMATE_PG_' ? 'ADMIN_URL' : 'CONNECTION_JSON')];
 if (declared !== Boolean(value)) process.exit(8);
-if (declared && process.env.CHECKMATE_PG_MANAGED !== '1') process.exit(9);
+if (declared && process.env[prefix + 'MANAGED'] !== '1') process.exit(9);
+if (Object.keys(process.env).some(key => /^CHECKMATE_(PG|MYSQL|MARIADB|MSSQL|ORACLE|MONGO)_/.test(key) && !key.startsWith(prefix))) process.exit(10);
 if (mode === 'cancel') { setInterval(() => {}, 1000); await new Promise(() => {}); }
 const event = (sequence, type, payload) => JSON.stringify({ protocolVersion: 1,
   runId: process.env.CHECKMATE_RUN_ID, sequence, type, time: new Date().toISOString(), payload });
@@ -63,7 +66,7 @@ process.stdout.write(event(mode === 'text' || mode === 'binary' || mode === 'cla
 type Mode = 'normal' | 'ansi-output' | 'output' | 'text' | 'binary' | 'claim' | 'cancel';
 async function scenario(mode: Mode, options: { declared?: boolean; second?: boolean;
   prepareFails?: boolean; cleanupVerified?: boolean; cancel?: boolean; noResources?: boolean;
-  workerCrash?: boolean } = {}) {
+  workerCrash?: boolean; kind?: DatabaseResourceKind } = {}) {
   const fixture = await createStoreFixture();
   const root = join(fixture.directory, '합성프로젝트');
   const runsRoot = join(fixture.directory, '실행');
@@ -71,12 +74,14 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
   await mkdir(join(root, 'tests'));
   await mkdir(runsRoot);
   const projectId = randomUUID();
+  const kind = options.kind ?? 'postgres-test';
+  const prefix = databaseEnvironmentPrefixes[kind];
   const commands = (options.second ? ['first', 'second'] : ['first']).map((id, index) => {
     const declared = options.declared === true && index === 0;
     return { id, title: id, runtime: 'node', entry: 'tests/run.mjs',
-      args: [mode, id, declared ? 'yes' : 'no'], timeoutMs: 5000,
+      args: [mode, id, declared ? 'yes' : 'no', prefix], timeoutMs: 5000,
       env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson',
-      ...(declared ? { resources: ['postgres-test'] } : {}) };
+      ...(declared ? { resources: [kind] } : {}) };
   });
   const project = { schemaVersion: 1, id: projectId, name: '합성 프로젝트',
     repositoryIdentity: 'synthetic:resource', commands,
@@ -102,7 +107,10 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
   const db = connectStore(fixture.dbPath);
   const prepare = vi.fn(async () => {
     if (options.prepareFails) throw new Error('합성 준비 실패');
-    return { environment: { CHECKMATE_PG_ADMIN_URL: url, CHECKMATE_PG_MANAGED: '1' }, secrets: [url, secret] };
+    return { environment: Object.fromEntries(databaseResourceKinds.flatMap(resource => {
+      const name = databaseEnvironmentPrefixes[resource];
+      return [[`${name}MANAGED`, '1'], [`${name}${resource === 'postgres-test' ? 'ADMIN_URL' : 'CONNECTION_JSON'}`, url]];
+    })), secrets: [url, secret] };
   });
   const cleanup = vi.fn(async () => ({ verified: options.cleanupVerified !== false, resources: [] }));
   try {
@@ -121,6 +129,13 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
 }
 
 describe('부모 소유 자원 실행 연결', () => {
+  it.each(databaseResourceKinds)('%s를 선언한 실제 자식 명령에 해당 연결만 전달한다', async kind => {
+    const { result, prepare, cleanup } = await scenario('normal', { kind, declared: true, second: true });
+    expect(result.verdict).toBe('passed');
+    expect(prepare.mock.calls[0]).toEqual([result.runId, expect.any(String), expect.any(AbortSignal), [kind]]);
+    expect(cleanup).toHaveBeenCalledOnce();
+  });
+
   it('ANSI로 나눈 합성 비밀과 인증 표지를 정규화한 뒤 가리고 조회에서 되살리지 않는다', async () => {
     const { result, events } = await scenario('ansi-output', { declared: true });
     expect(result.verdict).toBe('passed');

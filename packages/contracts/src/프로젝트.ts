@@ -1,5 +1,6 @@
 // 프로젝트 원본의 명령과 요구사항 및 검사항목을 엄격하게 검증한다.
 import { z } from 'zod';
+import { databaseEnvironmentPrefixes, databaseResourceKindSchema, databaseResourceKinds } from './시험자원.js';
 
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
 const title = z.string().trim().min(1).max(200);
@@ -27,14 +28,16 @@ const commandSchema = z.strictObject({
     for (const key of Object.keys(values)) {
       if ((key !== 'NODE_ENV' && !/^CHECKMATE_[A-Z0-9_]+$/u.test(key))
         || /(?:SECRET|TOKEN|PASSWORD|PRIVATE|CREDENTIAL|API_KEY|ACCESS_KEY|AUTH|COOKIE)/iu.test(key)
-        || ['CHECKMATE_PG_ADMIN_URL', 'CHECKMATE_PG_MANAGED', 'CHECKMATE_RUN_ID', 'CHECKMATE_EVIDENCE_DIR'].includes(key)) {
+        || Object.values(databaseEnvironmentPrefixes).some(prefix => key.startsWith(prefix))
+        || ['CHECKMATE_RUN_ID', 'CHECKMATE_EVIDENCE_DIR'].includes(key)) {
         context.addIssue({ code: 'custom', path: [key], message: '허용되지 않은 환경 변수 이름입니다.' });
       }
     }
   }),
   writes: z.array(relativePath).max(100),
   resultFormat: z.enum(['ndjson', 'exit-code']),
-  resources: z.array(z.literal('postgres-test')).max(1).optional(),
+  resources: z.array(databaseResourceKindSchema).max(databaseResourceKinds.length)
+    .refine(values => new Set(values).size === values.length, '시험 DB 종류가 중복되었습니다.').optional(),
 });
 
 const profileSchema = z.strictObject({

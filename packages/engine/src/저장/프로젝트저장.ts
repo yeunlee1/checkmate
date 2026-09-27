@@ -1,5 +1,6 @@
 // 프로젝트 원본과 계획 및 사람의 승인을 같은 SQLite 저장소에 연결한다.
 import { createHash, randomUUID } from 'node:crypto';
+import { databaseResourceNames } from '@checkmate/contracts/resources';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, normalize } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -277,9 +278,12 @@ export class ProjectStore {
         return { planId, projectId, profile: profileId, fingerprint, sourceHash: value.sourceHash,
           checks: selected.checks.map(({ id, title, required }) => ({ id, title, required })),
           commands: selected.commands, writes: selected.writes,
-          resourceEffects: selected.commands.some(command => command.resources?.includes('postgres-test'))
-            ? ['새 일회용 PostgreSQL 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.',
-              '컨테이너 안의 합성 DB 전체에 마이그레이션·쓰기·삭제를 허용하며, 실행 종료 시 컨테이너와 자료를 제거합니다. 기존 DB와 볼륨은 연결하지 않습니다.'] : [] };
+          resourceEffects: [...new Set(selected.commands.flatMap(command => command.resources ?? []))].flatMap(kind => [
+            `새 일회용 ${databaseResourceNames[kind]} 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.`,
+            ...(kind === 'mssql-test' ? ['SQL Server Developer의 개발·시험 전용 사용 조건과 EULA에 동의하여 생성합니다.'] : []),
+            ...(kind === 'oracle-test' ? ['Oracle Database Free의 사용 조건으로 합성 시험 DB를 생성합니다.'] : []),
+            '컨테이너 안의 합성 DB 전체에 마이그레이션·쓰기·삭제를 허용하며, 실행 종료 시 컨테이너와 자료를 제거합니다. 기존 DB와 볼륨은 연결하지 않습니다.',
+          ]) };
       })();
       return { ...plan, needsApproval: !this.hasApproval(plan.planId) };
     } catch (error) { fail(error); }

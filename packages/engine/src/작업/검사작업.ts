@@ -6,11 +6,12 @@ import { runOwnedCommand } from './소유실행.js';
 import { hideSecretsInNdjson } from './비밀가림.js';
 import type { EvidenceInput } from '../저장/증거저장.js';
 import type { ProcessOutcome, RegisteredCommand } from '../작업실행.js';
+import { selectDatabaseEnvironment, type DatabaseResourceKind } from '@checkmate/contracts/resources';
 
 export type FixedCommand = {
   id: string; entry: string; args: string[]; timeoutMs: number; env: Record<string, string>;
   resultFormat: 'exit-code' | 'ndjson'; checkIds: string[];
-  resources?: 'postgres-test'[];
+  resources?: DatabaseResourceKind[];
 };
 export type WorkerConfig = {
   runId: string; sourceRoot: string; evidenceRoot: string; ownerToken: string;
@@ -41,7 +42,7 @@ async function run(config: WorkerConfig): Promise<void> {
     const environment: Record<string, string> = { ...item.env,
       CHECKMATE_RUN_ID: config.runId, CHECKMATE_EVIDENCE_DIR: config.evidenceRoot,
       CHECKMATE_OWNER_TOKEN: config.ownerToken };
-    if (item.resources?.includes('postgres-test')) Object.assign(environment, config.resourceEnvironment);
+    Object.assign(environment, selectDatabaseEnvironment(item.resources ?? [], config.resourceEnvironment ?? {}));
     for (const key of ['SystemRoot', 'WINDIR'] as const) {
       if (process.env[key]) environment[key] = process.env[key]!;
     }

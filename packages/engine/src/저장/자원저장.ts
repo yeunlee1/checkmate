@@ -1,23 +1,31 @@
 // 실행 소유 자원의 생성 의도와 확인된 상태를 비밀 없이 저장한다.
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { databaseResourceKindSchema } from '@checkmate/contracts/resources';
+import { databaseSpecs } from '../자원/데이터베이스종류.js';
 
 export const localDockerEndpointSchema = z.string().max(1024)
   .regex(/^(?:unix:\/\/\/[^\x00-\x20\x7f?#]+|npipe:\/\/\/\/\.\/pipe\/[A-Za-z0-9_.-]+)$/u);
 export const resourceDescriptorSchema = z.strictObject({
-  name: z.string().regex(/^cm-pg-[a-f0-9-]{36}-[a-f0-9-]{36}$/u),
-  image: z.string().regex(/^postgres:17-alpine@sha256:[a-f0-9]{64}$/u),
+  name: z.string().regex(/^cm-(?:pg|mysql|mariadb|mssql|oracle|mongo)-[a-f0-9-]{36}-[a-f0-9-]{36}$/u),
+  image: z.string().max(256).regex(/^[a-z0-9./:-]+@sha256:[a-f0-9]{64}$/u),
   endpoint: localDockerEndpointSchema,
   daemonId: z.string().min(1).max(256),
   containerId: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   hostPort: z.number().int().min(1).max(65535).optional(),
 });
 const resourceSchema = z.strictObject({
-  id: z.uuid(), runId: z.uuid(), kind: z.literal('postgres-test'),
+  id: z.uuid(), runId: z.uuid(), kind: databaseResourceKindSchema,
   ownerTokenHash: z.string().regex(/^[a-f0-9]{64}$/u),
   state: z.enum(['intent', 'creating', 'created', 'ready', 'uncertain', 'cleaned']),
   descriptor: resourceDescriptorSchema,
   cleanup: z.strictObject({ verified: z.boolean(), checkedAt: z.iso.datetime(), reason: z.string().max(500) }).nullable(),
+}).superRefine((record, context) => {
+  const spec = databaseSpecs[record.kind];
+  if (record.descriptor.name !== `cm-${spec.prefix}-${record.runId}-${record.id}`
+    || record.descriptor.image.split('@')[0] !== spec.image.split('@')[0]) {
+    context.addIssue({ code: 'custom', message: '시험 DB 종류와 소유 정보가 다릅니다.' });
+  }
 });
 export type ResourceDescriptor = z.infer<typeof resourceDescriptorSchema>;
 export type ResourceRecord = z.infer<typeof resourceSchema>;

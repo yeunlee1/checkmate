@@ -20,7 +20,8 @@ import { BackupError, createBackup, restoreBackup } from '../저장/백업.js';
 import type { DataPaths } from '../연결/개인경로.js';
 import { getImportedHistory, importHistory, ImportHistoryError } from '../저장/가져온이력.js';
 import { ResourceStore } from '../저장/자원저장.js';
-import type { PostgresResources } from '../자원/격리데이터베이스.js';
+import type { DatabaseResources } from '../자원/격리데이터베이스.js';
+import { databaseResourceKinds } from '@checkmate/contracts/resources';
 
 const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources']);
 
@@ -36,7 +37,7 @@ export class ProductService {
   readonly resources: ResourceStore;
 
   constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths,
-    private readonly resourceController?: Pick<PostgresResources, 'cleanup'>) {
+    private readonly resourceController?: Pick<DatabaseResources, 'cleanup'>) {
     this.projects = new ProjectStore(db);
     this.runs = new SQLiteRunStore(db);
     this.execution = new RunService(this.runs, executor);
@@ -68,7 +69,8 @@ export class ProductService {
         apiInputs.capabilities.parse(raw);
         return { version: '0.1.0-alpha.1', apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
           connection: this.paths ? { dataRoot: this.paths.root } : null,
-          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'resource-recovery', 'public-images'],
+          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images'],
+          databaseResources: databaseResourceKinds,
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
       case 'projects': {

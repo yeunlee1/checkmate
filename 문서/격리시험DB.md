@@ -1,6 +1,8 @@
 # 격리 시험 DB.
 
-체크메이트는 프로젝트 명령이 `resources: ["postgres-test"]`를 선언한 경우 실행마다 새 PostgreSQL 컨테이너 하나를 생성한다. 명령 여러 개가 같은 자원을 선언하면 해당 실행 안에서 공유한다. 선언하지 않은 명령에는 연결 환경을 전달하지 않는다. 자원 선언은 소스와 계획 지문 및 승인 범위에 포함한다.
+체크메이트는 프로젝트 명령이 시험 DB 자원을 선언한 경우 실행마다 종류별 새 컨테이너를 생성한다. PostgreSQL·MySQL·MariaDB·SQL Server·Oracle·MongoDB를 지원한다. 명령 여러 개가 같은 종류를 선언하면 해당 실행 안에서 공유한다. 선언하지 않은 종류의 연결 환경은 명령에 전달하지 않는다. 자원 선언은 소스와 계획 지문 및 승인 범위에 포함한다. 종류별 설정과 사용 예제는 [다중 DB 검사](다중DB검사.md)에 있다.
+
+아래 PostgreSQL의 기존 계약과 수용 이력은 그대로 유지한다. `resources: ["postgres-test"]`의 관리 연결 환경은 이전 호출자와 호환된다.
 
 로컬 Linux Docker가 필요하다. PostgreSQL 17 alpine의 이미지 digest를 고정하며 loopback 동적 포트와 컨테이너 내부 tmpfs를 사용한다. 부모 서비스가 생성 전에 SQLite `resources`에 실행 ID·자원 ID·소유 토큰 해시·컨테이너 이름·이미지·로컬 endpoint와 daemon ID를 저장한다. DB 암호와 연결 URL, 토큰 원문은 기록하지 않는다. 현재 고정 이미지는 다음과 같다.
 
