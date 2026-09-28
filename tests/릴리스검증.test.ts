@@ -1,5 +1,5 @@
 // 릴리스 태그와 설치 산출물 변조 및 버전 역행의 게시 차단을 검증한다.
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,6 +22,17 @@ it('무서명 게시 안내는 서명 검증을 주장하지 않고 설치 경�
   expect(notes).toContain('Windows');
   expect(notes).not.toContain('서명과 타임스탬프를 검증한');
   expect(publisher.releaseNotes(undefined)).toContain('서명과 타임스탬프를 검증한');
+});
+it('공개 설치본은 영문 파일명으로 올리되 바이트와 해시 목록을 보존한다', async () => {
+  const folder = await mkdtemp(join(tmpdir(), '체크메이트 게시 ')); folders.push(folder);
+  const installer = Buffer.from('합성 설치본');
+  const hash = createHash('sha256').update(installer).digest('hex');
+  await writeFile(join(folder, 'CheckMate-개발설치.exe'), installer);
+  await writeFile(join(folder, 'SHA256SUMS.txt'), `${hash}  CheckMate-개발설치.exe\n`);
+  await publisher.preparePublicInstaller(folder);
+  expect(await readFile(join(folder, 'CheckMate-Setup.exe'))).toEqual(installer);
+  expect(await readFile(join(folder, 'SHA256SUMS.txt'), 'utf8')).toBe(`${hash}  CheckMate-Setup.exe\n`);
+  expect(await readdir(folder)).not.toContain('CheckMate-개발설치.exe');
 });
 it('워크스페이스 버전 불일치와 태그의 사전 배포·잘못된 버전을 거절한다', () => {
   expect(validator.releaseVersion([{ version: '1.2.3' }, { version: '1.2.3' }], 'v1.2.3')).toBe('1.2.3');
