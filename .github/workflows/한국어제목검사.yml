@@ -23,6 +23,11 @@ jobs:
       - name: 제목 검사 자체 검증
         shell: pwsh
         run: ./scripts/깃/제목검사검증.ps1
+      - name: 브랜치 표기 검사
+        shell: pwsh
+        env:
+          BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+        run: ./scripts/깃/제목검사.ps1 -ReferenceName $env:BRANCH_NAME
       - name: 풀 리퀘스트 제목 검사
         if: github.event_name == 'pull_request'
         shell: pwsh

@@ -14,6 +14,7 @@ do
     if [ "$local_sha" = "$zero_sha" ]; then
         continue
     fi
+    pwsh -NoLogo -NoProfile -File "$repo_root/scripts/깃/제목검사.ps1" -ReferenceName "$remote_ref" || exit 1
     if [ "$remote_sha" = "$zero_sha" ]; then
         commits="$(git rev-list "$local_sha" --not --remotes)" || exit 1
     else

@@ -1,16 +1,33 @@
 # 커밋과 풀 리퀘스트 제목의 한국어 설명을 검사한다.
 param(
     [string] $Title,
-    [string] $CommitMessageFile
+    [string] $CommitMessageFile,
+    [string] $ReferenceName
 )
 
 $ErrorActionPreference = 'Stop'
 
 if ($CommitMessageFile) {
-    $Title = Get-Content -LiteralPath $CommitMessageFile -Encoding UTF8 |
-        Where-Object { -not $_.StartsWith('#') -and -not [string]::IsNullOrWhiteSpace($_) } |
-        Select-Object -First 1
+    $messageLines = @(Get-Content -LiteralPath $CommitMessageFile -Encoding UTF8 |
+        Where-Object { -not $_.StartsWith('#') -and -not [string]::IsNullOrWhiteSpace($_) })
+    $Title = $messageLines | Select-Object -First 1
 }
+
+$textToCheck = if ($ReferenceName) { $ReferenceName } elseif ($CommitMessageFile) { $messageLines -join "`n" } else { $Title }
+foreach ($rune in ([string] $textToCheck).EnumerateRunes()) {
+    $category = [System.Text.Rune]::GetUnicodeCategory($rune).ToString()
+    if ($category -notmatch 'Letter$') { continue }
+    $point = $rune.Value
+    $allowed = ($point -ge 0x41 -and $point -le 0x5A) -or ($point -ge 0x61 -and $point -le 0x7A) -or
+        ($point -ge 0x1100 -and $point -le 0x11FF) -or ($point -ge 0x3130 -and $point -le 0x318F) -or
+        ($point -ge 0xA960 -and $point -le 0xA97F) -or ($point -ge 0xAC00 -and $point -le 0xD7A3) -or
+        ($point -ge 0xD7B0 -and $point -le 0xD7FF)
+    if (-not $allowed) {
+        Write-Host '글자는 한글과 영어만 사용할 수 있습니다. 이름과 설명을 수정해 주세요.' -ForegroundColor Red
+        exit 1
+    }
+}
+if ($ReferenceName) { exit 0 }
 
 if ([string]::IsNullOrWhiteSpace($Title)) {
     Write-Host '제목이 비어 있습니다. 작업 내용을 한국어로 적어 주세요.' -ForegroundColor Red

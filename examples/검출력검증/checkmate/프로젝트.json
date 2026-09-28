@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "e2e2c580-475a-4cb5-94e7-1e9a87e0794e",
+  "name": "합성 변이 검출력 검증",
+  "repositoryIdentity": "checkmate:synthetic:mutation",
+  "commands": [
+    { "id": "run-strong", "title": "강한 검사 변이 실행", "runtime": "node", "entry": "tests/검사.mjs", "args": ["strong"], "timeoutMs": 120000, "env": { "NODE_ENV": "test" }, "writes": [".runtime"], "resultFormat": "ndjson" },
+    { "id": "run-weak", "title": "약한 검사 변이 실행", "runtime": "node", "entry": "tests/검사.mjs", "args": ["weak"], "timeoutMs": 120000, "env": { "NODE_ENV": "test" }, "writes": [".runtime"], "resultFormat": "ndjson" }
+  ],
+  "profiles": [
+    { "id": "strong", "title": "강한 검사", "checkIds": ["strong-mutation"] },
+    { "id": "weak", "title": "약한 검사", "checkIds": ["weak-mutation"] }
+  ]
+}

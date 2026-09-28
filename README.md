@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0--alpha.1-2563eb?style=flat-square" alt="0.1.0-alpha.1 개발판"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0-2563eb?style=flat-square" alt="0.1.0 무서명 배포"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md"><img src="https://img.shields.io/badge/interface-Desktop%20%7C%20CLI%20%7C%20MCP-172438?style=flat-square" alt="Desktop, CLI, MCP 지원"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/저장및연결계약.md"><img src="https://img.shields.io/badge/storage-Local%20SQLite-172438?style=flat-square" alt="로컬 SQLite 저장"></a>
 </p>
@@ -45,7 +45,7 @@ AI가 코드를 만들 때마다 사람이 화면을 누르고, 권한을 바꾸
 | **검사의 검출력 측정** | Stryker로 코드를 변이시켜, 작성한 검사가 의도적인 오류를 잡아내는지 확인합니다. |
 | **디자인 위반 위치 표시** | 브라우저에서 관측한 규칙 위반을 해당 실행의 스크린샷 좌표에 표시합니다. |
 
-여기에 실행 이력, 미검증 항목의 보완 이력, HTML 보고서, 백업·복구, 실행별 일회용 PostgreSQL 관리를 제공합니다. 구체적인 검사 규칙과 기대값은 각 프로젝트에서 작성합니다.
+여기에 실행 이력, 미검증 항목의 보완 이력, HTML 보고서, 백업·복구와 PostgreSQL·MySQL·MariaDB·SQL Server·Oracle·MongoDB의 실행별 일회용 자원 관리를 제공합니다. 구체적인 검사 규칙과 기대값은 각 프로젝트에서 작성합니다.
 
 ## 검사 결과를 믿을 수 있도록.
 
@@ -56,7 +56,11 @@ AI가 코드를 만들 때마다 사람이 화면을 누르고, 권한을 바꾸
 
 ## 빠르게 시작하기.
 
-현재는 **`0.1.0-alpha.1` 개발판**입니다. 아래는 Windows에서 소스로 실행하는 방법입니다. Node.js 24와 Git이 필요하며, 개발 코드는 `develop` 브랜치에 있습니다.
+Windows 설치본은 [GitHub Releases](https://github.com/yeunlee1/checkmate/releases)에서 확인하세요. **`0.1.0`은 자동 업데이트 기능을 포함한 무서명 배포 버전**으로, Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 자동 업데이트가 없는 이전 개발 설치본은 새 설치본을 직접 설치해야 합니다.
+
+아래는 Windows에서 소스로 실행하는 방법입니다. Node.js 24와 Git이 필요하며, 개발 코드는 `develop` 브랜치에 있습니다.
+
+다른 PC에서 개발을 이어가려면 [회사에서 개발 이어가기](https://github.com/yeunlee1/checkmate/blob/develop/문서/회사에서개발이어가기.md)의 준비물·MCP 자료 경로·인계 범위를 먼저 확인하세요.
 
 ```powershell
 git clone --branch develop https://github.com/yeunlee1/checkmate.git
@@ -77,7 +81,7 @@ npm run desktop:dev
 
 `defect` 프로필에는 저장·역할별 정보 노출·화면·접근성·계산 오류가 의도적으로 들어 있습니다. 이 프로필로 실패와 AI 수정 자료 묶음을 살펴볼 수 있습니다. 두 예제는 외부 계정이나 업무 DB 없이 실행됩니다.
 
-> 일회용 PostgreSQL을 사용하는 프로필에만 Linux 컨테이너를 실행할 수 있는 로컬 Docker가 필요합니다. 자세한 설정은 [격리 시험 DB 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/격리시험DB.md)를 참고하세요.
+> 일회용 DB를 사용하는 프로필에는 Linux 컨테이너를 실행할 수 있는 로컬 Docker가 필요합니다. 여섯 종류의 고정 버전·연결 방법·검증 범위는 [다중 DB 검사 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/다중DB검사.md)를 참고하세요.
 
 ## AI와 함께 사용하기.
 
@@ -138,23 +142,25 @@ npm run checkmate -- --help
 | 이력과 증거 | SQLite · 로컬 파일 · SHA-256 |
 | 브라우저와 접근성 | Playwright · axe |
 | 회귀와 변이 검사 | Vitest · Stryker |
-| 일회용 시험 DB | Docker · PostgreSQL |
+| 일회용 시험 DB | Docker · PostgreSQL · MySQL · MariaDB · SQL Server · Oracle · MongoDB |
 
 ```powershell
 npm test                 # 빌드, 타입 검사, 회귀 검사
 npm run desktop:test     # 실제 Electron 화면 흐름 검사
 ```
 
-Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. 코드 서명, 깨끗한 Windows에서의 설치, 버전 간 업데이트 수용은 정식 출시 전에 남은 작업입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
+Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. Windows 설치본의 [자동 업데이트와 GitHub Actions 배포](문서/자동업데이트.md)를 제공합니다. 이번 공개 설치본에는 코드 서명이 없습니다. 깨끗한 Windows에서의 설치와 공개 버전 간 업데이트는 별도 검증이 필요합니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
 
 ## 더 알아보기.
 
 | 문서 | 내용 |
 | --- | --- |
+| [상세 사용 설명서](https://github.com/yeunlee1/checkmate/blob/develop/문서/상세사용설명서.md) | 실제 화면으로 따라 하는 첫 검사, AI 연결, 결과 해석, CLI, 백업·복구와 문제 해결 |
 | [사용 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md) | 첫 실행, 결과 읽기, CLI·MCP, 백업과 복구 |
 | [검사 작성 안내](https://github.com/yeunlee1/checkmate/blob/develop/문서/검사작성안내.md) | 프로젝트 등록 원본, 리포터, 증거 연결 |
 | [검출력 사용법](https://github.com/yeunlee1/checkmate/blob/develop/문서/검출력사용법.md) | 실제 Stryker 실행과 변이 점수 해석 |
-| [격리 시험 DB](https://github.com/yeunlee1/checkmate/blob/develop/문서/격리시험DB.md) | 일회용 PostgreSQL의 생성·실행·정리 |
+| [다중 DB 검사](https://github.com/yeunlee1/checkmate/blob/develop/문서/다중DB검사.md) | 여섯 종류의 격리 DB 연결·시험·정리와 고정 버전 |
+| [회사에서 개발 이어가기](https://github.com/yeunlee1/checkmate/blob/develop/문서/회사에서개발이어가기.md) | 새 Windows PC 준비·소스 복원·MCP 연결·남은 작업 |
 | [구현 기준 설계](https://github.com/yeunlee1/checkmate/blob/develop/문서/구현기준설계.md) | 구조, 보안 경계, 실행과 판정 기준 |
 | [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md) | 구현 기능, 검증 근거, 남은 출시 조건 |
 | [깃 관리](https://github.com/yeunlee1/checkmate/blob/develop/문서/깃관리.md) | 작업 브랜치와 검증·병합 규칙 |

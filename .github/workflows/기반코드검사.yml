@@ -1,0 +1,49 @@
+name: 기반 코드 검사
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    name: 기반 빌드와 회귀 검사
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: 저장소 내려받기
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Node 실행 환경 준비
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
+          cache: npm
+      - name: 고정한 의존성 설치
+        run: npm ci --ignore-scripts
+      - name: 실제 브라우저 시험 환경 준비
+        run: npx playwright install --with-deps chromium
+      - name: 빌드와 실제 프로세스 회귀 검사
+        run: npm test
+      - name: CLI 진단
+        run: node packages/engine/dist/명령.js doctor --json
+      - name: 큰 화면 증거의 실제 브라우저 회귀 검사
+        run: node scripts/이미지화면검증.mjs
+      - name: Windows 설치 압축의 한글 경로 검사
+        if: runner.os == 'Windows'
+        run: node scripts/압축경로검증.mjs
+      - name: Windows 데스크톱 실행 환경 준비
+        if: runner.os == 'Windows'
+        run: node node_modules/electron/install.js
+      - name: Windows 실제 데스크톱 흐름 검사
+        if: runner.os == 'Windows'
+        run: npm run desktop:test

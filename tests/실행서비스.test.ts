@@ -1,0 +1,281 @@
+// 실제 SQLite 저장소와 메모리 실행기로 서비스의 큐와 취소를 검증한다.
+import { randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { afterEach, expect, test, vi } from 'vitest';
+import { assessResult } from '@checkmate/contracts';
+import type { RunResult } from '@checkmate/contracts';
+import { RunStoreError } from '@checkmate/contracts/runs';
+import type { PlanRegistration } from '@checkmate/contracts/runs';
+import { RunService } from '../packages/engine/src/서비스/실행서비스.js';
+import type { RunExecutor } from '../packages/engine/src/서비스/실행서비스.js';
+import { connectStore } from '../packages/engine/src/저장/연결.js';
+import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
+import { createStoreFixture } from './저장시험자료.js';
+
+const cleanup: (() => Promise<void>)[] = [];
+afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
+
+async function setup(executor: RunExecutor) {
+  const files = await createStoreFixture();
+  const db = connectStore(files.dbPath);
+  cleanup.push(async () => { db.close(); await files.cleanup(); });
+  const plan: PlanRegistration = {
+    project: { id: randomUUID(), name: '서비스 시험', repositoryIdentity: 'local-test' },
+    workspace: { id: randomUUID(), realPath: files.directory, pathFingerprint: 'a'.repeat(64) },
+    catalog: { id: randomUUID(), contentHash: 'b'.repeat(64), source: {} },
+    plan: { id: randomUUID(), fingerprint: 'c'.repeat(64), sourceHash: 'd'.repeat(64), profile: 'quick',
+      plannedChecks: ['check-1'], requiredChecks: ['check-1'] },
+    createdAt: new Date().toISOString(),
+  };
+  const store = new SQLiteRunStore(db);
+  store.registerPlan(plan);
+  return { files, store, plan, service: new RunService(store, executor) };
+}
+
+function passed(initial: RunResult): RunResult {
+  return { ...initial, state: 'finished', sourceAfter: initial.sourceBefore, workerExitCode: 0,
+    environmentVerified: true, evidenceVerified: true, cleanupVerified: true,
+    cases: [{ testId: 'check-1', status: 'passed', requirementId: null, expected: null, observed: null,
+      evidenceIds: [], severity: 'info', location: null }] };
+}
+
+async function anotherProject(files: Awaited<ReturnType<typeof createStoreFixture>>, store: SQLiteRunStore,
+  base: PlanRegistration, name: string): Promise<PlanRegistration> {
+  const path = join(files.directory, name);
+  await mkdir(path);
+  const plan: PlanRegistration = { ...base,
+    project: { ...base.project, id: randomUUID(), name, repositoryIdentity: `local-${name}` },
+    workspace: { ...base.workspace, id: randomUUID(), realPath: path },
+    catalog: { ...base.catalog, id: randomUUID() },
+    plan: { ...base.plan, id: randomUUID() } };
+  store.registerPlan(plan);
+  return plan;
+}
+
+test('접수 뒤 한 번만 실행하고 같은 요청에 같은 실행 ID를 돌려준다', async () => {
+  let calls = 0;
+  const { store, plan, service } = await setup(async (_plan, initial) => { calls++; return passed(initial); });
+  const input = { projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() };
+  const first = service.start(input);
+  expect(store.getRun(first.runId)?.state).toBe('queued');
+  expect(service.start(input)).toEqual({ runId: first.runId, reused: true });
+  const result = await service.wait(first.runId);
+  expect(result.verdict).toBe('passed');
+  expect(result.reasons).toEqual(assessResult(result).reasons);
+  expect(calls).toBe(1);
+  expect(await service.wait(first.runId)).toEqual(result);
+});
+
+test('확정 후 메모리 소유 정보를 비우고 wait가 저장 결과를 다시 읽는다', async () => {
+  const { store, plan, service } = await setup(async (_plan, initial) => passed(initial));
+  const run = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  const result = await service.wait(run.runId);
+  expect((service as unknown as { local: Map<string, unknown> }).local.size).toBe(0);
+  const read = vi.spyOn(store, 'getRun');
+  expect(await service.wait(run.runId)).toEqual(result);
+  expect(read).toHaveBeenCalledWith(run.runId);
+});
+
+test('최종 저장 실패는 wait에 전달되고 성공으로 재사용되지 않는다', async () => {
+  const { store, plan, service } = await setup(async (_plan, initial) => passed(initial));
+  vi.spyOn(store, 'finalizeRun').mockImplementationOnce(() => { throw new RunStoreError('storage-error'); });
+  const run = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  await expect(service.wait(run.runId)).rejects.toMatchObject({ code: 'storage-error' });
+  expect((service as unknown as { local: Map<string, unknown> }).local.size).toBe(0);
+  await expect(service.wait(run.runId)).rejects.toMatchObject({ code: 'invalid-state' });
+  expect(store.getRun(run.runId)?.finalized).toBe(false);
+});
+
+test('취소 신호를 받은 실행은 통과 결과를 반환해도 cancelled로 확정한다', async () => {
+  let signalSeen = false;
+  const { plan, service } = await setup(async (_plan, initial, signal) => {
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => { signalSeen = true; resolve(); }, { once: true }));
+    return passed(initial);
+  });
+  const run = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  await Promise.resolve();
+  const result = await service.cancel(run.runId);
+  expect(result.state).toBe('cancelled');
+  expect(result.verdict).not.toBe('passed');
+  expect(signalSeen).toBe(true);
+  expect(result.cleanupVerified).toBe(true);
+  expect(result.workerExitCode).toBe(0);
+});
+
+test('취소 전에 관측된 실패와 실제 정리 근거를 지우지 않는다', async () => {
+  const { plan, service } = await setup(async (_plan, initial, signal) => {
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    const result = passed(initial);
+    result.cases[0]!.status = 'failed';
+    result.cases[0]!.observed = '취소 전 관측한 불일치';
+    return result;
+  });
+  const run = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  await Promise.resolve();
+  expect(await service.cancel(run.runId)).toMatchObject({ state: 'cancelled', verdict: 'failed', cleanupVerified: true,
+    cases: [{ status: 'failed', observed: '취소 전 관측한 불일치' }] });
+});
+
+test('실행기 예외와 고정 계획 변조를 unverifiable로 보존한다', async () => {
+  const first = await setup(async () => { throw new Error('비밀 실행기 오류'); });
+  const run = first.service.start({ projectId: first.plan.project.id, planId: first.plan.plan.id, requestId: randomUUID() });
+  expect((await first.service.wait(run.runId)).state).toBe('unverifiable');
+  const second = await setup(async (_plan, initial) => ({ ...passed(initial), runId: randomUUID() }));
+  const mutated = second.service.start({ projectId: second.plan.project.id, planId: second.plan.plan.id, requestId: randomUUID() });
+  const result = await second.service.wait(mutated.runId);
+  expect(result.state).toBe('unverifiable');
+  expect(result.runId).toBe(mutated.runId);
+});
+
+test('다른 서비스가 소유한 진행 중 실행은 재실행하거나 취소하지 않는다', async () => {
+  let calls = 0;
+  const { store, plan, service } = await setup(async (_plan, initial) => { calls++; return passed(initial); });
+  const input = { projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() };
+  const run = service.start(input);
+  const other = new RunService(store, async () => { calls++; throw new Error('실행되면 안 됨'); });
+  expect(other.start(input)).toEqual({ runId: run.runId, reused: true });
+  await expect(other.cancel(run.runId)).rejects.toMatchObject({ code: 'invalid-state' });
+  await service.wait(run.runId);
+  expect(calls).toBe(1);
+});
+
+test('서로 다른 두 프로젝트를 함께 실행하고 세 번째 대기 실행은 취소 시 호출하지 않는다', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started: string[] = [];
+  const { files, store, plan, service } = await setup(async (_plan, initial) => {
+    started.push(initial.runId);
+    await gate;
+    return passed(initial);
+  });
+  const secondPlan = await anotherProject(files, store, plan, '두번째');
+  const thirdPlan = await anotherProject(files, store, plan, '세번째');
+  const first = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  const second = service.start({ projectId: secondPlan.project.id, planId: secondPlan.plan.id, requestId: randomUUID() });
+  const thirdInput = { projectId: thirdPlan.project.id, planId: thirdPlan.plan.id, requestId: randomUUID() };
+  const third = service.start(thirdInput);
+  expect(service.start(thirdInput)).toEqual({ runId: third.runId, reused: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(started).toEqual([first.runId, second.runId]);
+  expect(store.getRun(third.runId)?.state).toBe('queued');
+  const cancel = service.cancel(third.runId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let immediate: [RunResult, RunResult] | null;
+  try {
+    immediate = await Promise.race([
+      Promise.all([cancel, service.wait(third.runId)]),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 200); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    release();
+  }
+  expect(immediate?.[0].state).toBe('cancelled');
+  expect(immediate?.[0].cleanupVerified).toBe(true);
+  expect(immediate?.[1].state).toBe('cancelled');
+  expect(started).toEqual([first.runId, second.runId]);
+  expect((await service.wait(first.runId)).verdict).toBe('passed');
+  expect((await service.wait(second.runId)).verdict).toBe('passed');
+  expect(started).toEqual([first.runId, second.runId]);
+});
+
+test('대기 중 취소 전에 등록한 wait도 선행 실행 종료 전에 확정을 받는다', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started: string[] = [];
+  const { files, store, plan, service } = await setup(async (_plan, initial) => {
+    started.push(initial.runId);
+    await gate;
+    return passed(initial);
+  });
+  const secondPlan = await anotherProject(files, store, plan, '두번째');
+  const thirdPlan = await anotherProject(files, store, plan, '세번째');
+  const first = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+  const second = service.start({ projectId: secondPlan.project.id, planId: secondPlan.plan.id, requestId: randomUUID() });
+  const third = service.start({ projectId: thirdPlan.project.id, planId: thirdPlan.plan.id, requestId: randomUUID() });
+  const existingWait = service.wait(third.runId);
+  const otherWait = service.wait(third.runId);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.resolve();
+    expect(started).toEqual([first.runId, second.runId]);
+    const cancelled = await service.cancel(third.runId);
+    const observed = await Promise.race([
+      Promise.all([existingWait, otherWait]),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 200); }),
+    ]);
+    expect(store.getRun(third.runId)?.state).toBe('cancelled');
+    expect(cancelled.state).toBe('cancelled');
+    expect((await service.wait(third.runId)).state).toBe('cancelled');
+    expect(observed).toEqual([cancelled, cancelled]);
+    expect(started).toEqual([first.runId, second.runId]);
+  } finally {
+    clearTimeout(timer);
+    release();
+    await service.wait(first.runId);
+    await service.wait(second.runId);
+    await existingWait;
+    await otherWait;
+  }
+  expect(started).toEqual([first.runId, second.runId]);
+});
+
+test('실행기 예외와 최종 저장 실패 뒤에도 세 번째 실행에 슬롯을 반환한다', async () => {
+  for (const failure of ['executor', 'storage'] as const) {
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const secondGate = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const started: string[] = [];
+    let firstId: string | undefined;
+    let secondId: string | undefined;
+    const { files, store, plan, service } = await setup(async (_plan, initial) => {
+      started.push(initial.runId);
+      if (initial.runId === firstId) {
+        await firstGate;
+        if (failure === 'executor') throw new Error('합성 실행기 오류');
+      }
+      if (initial.runId === secondId) await secondGate;
+      return passed(initial);
+    });
+    const secondPlan = await anotherProject(files, store, plan, `두번째-${failure}`);
+    const thirdPlan = await anotherProject(files, store, plan, `세번째-${failure}`);
+    const first = service.start({ projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() });
+    firstId = first.runId;
+    const second = service.start({ projectId: secondPlan.project.id, planId: secondPlan.plan.id, requestId: randomUUID() });
+    secondId = second.runId;
+    const third = service.start({ projectId: thirdPlan.project.id, planId: thirdPlan.plan.id, requestId: randomUUID() });
+    await vi.waitFor(() => expect(started).toEqual([first.runId, second.runId]));
+    if (failure === 'storage') vi.spyOn(store, 'finalizeRun').mockImplementationOnce(() => { throw new RunStoreError('storage-error'); });
+    try {
+      releaseFirst();
+      if (failure === 'storage') await expect(service.wait(first.runId)).rejects.toMatchObject({ code: 'storage-error' });
+      else expect((await service.wait(first.runId)).state).toBe('unverifiable');
+      await vi.waitFor(() => expect(started).toEqual([first.runId, second.runId, third.runId]));
+      expect((await service.wait(third.runId)).verdict).toBe('passed');
+    } finally {
+      releaseSecond();
+      await service.wait(second.runId);
+    }
+  }
+});
+
+test('시작 직후 입력 객체를 바꿔도 접수된 계획만 실행한다', async () => {
+  let executedPlanId: string | undefined;
+  const { store, plan, service } = await setup(async (selected, initial) => {
+    executedPlanId = selected.plan.id;
+    return passed(initial);
+  });
+  const otherPlan: PlanRegistration = { ...plan,
+    plan: { ...plan.plan, id: randomUUID(), fingerprint: 'e'.repeat(64), sourceHash: 'f'.repeat(64) } };
+  store.registerPlan(otherPlan);
+  const input = { projectId: plan.project.id, planId: plan.plan.id, requestId: randomUUID() };
+  const accepted = service.start(input);
+  input.planId = otherPlan.plan.id;
+  const result = await service.wait(accepted.runId);
+  expect(executedPlanId).toBe(plan.plan.id);
+  expect(result.planHash).toBe(plan.plan.fingerprint);
+  expect(result.verdict).toBe('passed');
+});
