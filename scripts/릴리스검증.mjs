@@ -9,6 +9,9 @@ import { pathToFileURL } from 'node:url';
 export function releaseVersion(manifests, tag) {
   const version = manifests[0]?.version;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\da-z.-]+)?$/.test(version) || manifests.some(item => item.version !== version)) throw new Error('패키지 버전이 일치하지 않습니다.');
+  for (const manifest of manifests) {
+    if (Object.entries(manifest.dependencies ?? {}).some(([name, required]) => name.startsWith('@checkmate/') && required !== version)) throw new Error('내부 패키지 의존성 버전이 일치하지 않습니다.');
+  }
   if (tag && (!/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(tag) || tag !== `v${version}`)) throw new Error('정식 버전 태그와 소스 버전이 일치해야 합니다.');
   return version;
 }

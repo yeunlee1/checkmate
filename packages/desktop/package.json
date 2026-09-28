@@ -11,8 +11,8 @@
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort"
   },
   "dependencies": {
-    "@checkmate/contracts": "0.1.0-alpha.1",
-    "@checkmate/engine": "0.1.0-alpha.1",
+    "@checkmate/contracts": "0.1.0",
+    "@checkmate/engine": "0.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

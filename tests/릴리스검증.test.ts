@@ -28,6 +28,10 @@ it('워크스페이스 버전 불일치와 태그의 사전 배포·잘못된 �
   expect(() => validator.releaseVersion([{ version: '1.2.3' }, { version: '1.2.4' }], 'v1.2.3')).toThrow();
   for (const tag of ['v1.2.3-beta.1', 'v1.2.4', 'v01.2.3', 'other']) expect(() => validator.releaseVersion([{ version: '1.2.3' }], tag)).toThrow();
 });
+it('내부 패키지 의존성이 이전 버전에 남으면 제작 전에 거절한다', () => {
+  expect(() => validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0-alpha.1' } }])).toThrow('의존성');
+  expect(validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0', react: '19.3.0' } }])).toBe('0.1.0');
+});
 it('정식 배포의 같은 버전과 낮은 버전 및 사전 배포를 최신으로 지정하지 않는다', () => {
   expect(publisher.newerVersion('v1.2.3', null)).toBe(true);
   expect(publisher.newerVersion('v1.10.0', 'v1.9.9')).toBe(true);
