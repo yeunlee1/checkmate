@@ -10,10 +10,27 @@ const validator = await import(pathToFileURL(resolve('scripts/릴리스검증.mj
 const publisher = await import(pathToFileURL(resolve('scripts/릴리스게시.mjs')).href);
 const folders: string[] = [];
 afterEach(async () => { for (const folder of folders.splice(0)) await rm(folder, { recursive: true, force: true }); });
+it('태그 배포는 명시적으로 무서명을 허용한 경우에만 서명 요구를 해제한다', () => {
+  expect(validator.requiresSignature('tag', undefined)).toBe(true);
+  expect(validator.requiresSignature('tag', 'false')).toBe(true);
+  expect(validator.requiresSignature('tag', 'true')).toBe(false);
+  expect(validator.requiresSignature('branch', undefined)).toBe(false);
+});
+it('무서명 게시 안내는 서명 검증을 주장하지 않고 설치 경고를 알린다', () => {
+  const notes = publisher.releaseNotes('true');
+  expect(notes).toContain('서명되지 않은');
+  expect(notes).toContain('Windows');
+  expect(notes).not.toContain('서명과 타임스탬프를 검증한');
+  expect(publisher.releaseNotes(undefined)).toContain('서명과 타임스탬프를 검증한');
+});
 it('워크스페이스 버전 불일치와 태그의 사전 배포·잘못된 버전을 거절한다', () => {
   expect(validator.releaseVersion([{ version: '1.2.3' }, { version: '1.2.3' }], 'v1.2.3')).toBe('1.2.3');
   expect(() => validator.releaseVersion([{ version: '1.2.3' }, { version: '1.2.4' }], 'v1.2.3')).toThrow();
   for (const tag of ['v1.2.3-beta.1', 'v1.2.4', 'v01.2.3', 'other']) expect(() => validator.releaseVersion([{ version: '1.2.3' }], tag)).toThrow();
+});
+it('내부 패키지 의존성이 이전 버전에 남으면 제작 전에 거절한다', () => {
+  expect(() => validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0-alpha.1' } }])).toThrow('의존성');
+  expect(validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0', react: '19.3.0' } }])).toBe('0.1.0');
 });
 it('정식 배포의 같은 버전과 낮은 버전 및 사전 배포를 최신으로 지정하지 않는다', () => {
   expect(publisher.newerVersion('v1.2.3', null)).toBe(true);

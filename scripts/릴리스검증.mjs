@@ -9,8 +9,14 @@ import { pathToFileURL } from 'node:url';
 export function releaseVersion(manifests, tag) {
   const version = manifests[0]?.version;
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[\da-z.-]+)?$/.test(version) || manifests.some(item => item.version !== version)) throw new Error('패키지 버전이 일치하지 않습니다.');
+  for (const manifest of manifests) {
+    if (Object.entries(manifest.dependencies ?? {}).some(([name, required]) => name.startsWith('@checkmate/') && required !== version)) throw new Error('내부 패키지 의존성 버전이 일치하지 않습니다.');
+  }
   if (tag && (!/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(tag) || tag !== `v${version}`)) throw new Error('정식 버전 태그와 소스 버전이 일치해야 합니다.');
   return version;
+}
+export function requiresSignature(refType, allowUnsigned) {
+  return refType === 'tag' && allowUnsigned !== 'true';
 }
 const git = args => execFileSync('git', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 async function digest(file, algorithm) {
@@ -55,7 +61,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const [mode, argument] = process.argv.slice(2);
   if (mode === 'source') console.log(JSON.stringify(await source(argument)));
   else if (mode === 'artifacts' && argument) {
-    const checked = await verifyArtifacts(JSON.parse(await readFile(argument, 'utf8')), { ...await source(), requireSigned: process.env.GITHUB_REF_TYPE === 'tag' });
+    const checked = await verifyArtifacts(JSON.parse(await readFile(argument, 'utf8')), { ...await source(), requireSigned: requiresSignature(process.env.GITHUB_REF_TYPE, process.env.CHECKMATE_ALLOW_UNSIGNED_RELEASE) });
     await writeFile(resolve(checked.folder, 'SHA256SUMS.txt'), checked.checksums, { flag: 'wx' });
     console.log(JSON.stringify({ verified: true, folder: checked.folder }));
   } else throw new Error('source [태그] 또는 artifacts <제작보고서>를 지정해 주세요.');
