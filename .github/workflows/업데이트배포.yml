@@ -20,6 +20,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CHECKMATE_ALLOW_UNSIGNED_RELEASE: 'true'
+
 concurrency:
   group: checkmate-release-${{ github.ref_type == 'tag' && 'stable' || github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
@@ -52,7 +55,7 @@ jobs:
       - run: npm test
       - run: npm run desktop:test
       - name: 정식 배포 인증서 준비
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag' && env.CHECKMATE_ALLOW_UNSIGNED_RELEASE != 'true'
         shell: pwsh
         env:
           CHECKMATE_SIGN_PFX_BASE64: ${{ secrets.CHECKMATE_SIGN_PFX_BASE64 }}
@@ -103,7 +106,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: 이번 작업의 서명 인증서 제거
-        if: always() && github.event_name == 'push' && github.ref_type == 'tag'
+        if: always() && github.event_name == 'push' && github.ref_type == 'tag' && env.CHECKMATE_ALLOW_UNSIGNED_RELEASE != 'true'
         shell: pwsh
         run: ./scripts/릴리스서명.ps1 cleanup
   publish:

@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0--alpha.1-2563eb?style=flat-square" alt="0.1.0-alpha.1 개발판"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0-2563eb?style=flat-square" alt="0.1.0 무서명 배포"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md"><img src="https://img.shields.io/badge/interface-Desktop%20%7C%20CLI%20%7C%20MCP-172438?style=flat-square" alt="Desktop, CLI, MCP 지원"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/저장및연결계약.md"><img src="https://img.shields.io/badge/storage-Local%20SQLite-172438?style=flat-square" alt="로컬 SQLite 저장"></a>
 </p>
@@ -56,7 +56,9 @@ AI가 코드를 만들 때마다 사람이 화면을 누르고, 권한을 바꾸
 
 ## 빠르게 시작하기.
 
-현재는 **`0.1.0-alpha.1` 개발판**입니다. 아래는 Windows에서 소스로 실행하는 방법입니다. Node.js 24와 Git이 필요하며, 개발 코드는 `develop` 브랜치에 있습니다.
+Windows 설치본은 [GitHub Releases](https://github.com/yeunlee1/checkmate/releases)에서 확인하세요. **`0.1.0`은 자동 업데이트 기능을 포함한 무서명 배포 버전**으로, Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 자동 업데이트가 없는 이전 개발 설치본은 새 설치본을 직접 설치해야 합니다.
+
+아래는 Windows에서 소스로 실행하는 방법입니다. Node.js 24와 Git이 필요하며, 개발 코드는 `develop` 브랜치에 있습니다.
 
 다른 PC에서 개발을 이어가려면 [회사에서 개발 이어가기](https://github.com/yeunlee1/checkmate/blob/develop/문서/회사에서개발이어가기.md)의 준비물·MCP 자료 경로·인계 범위를 먼저 확인하세요.
 
@@ -147,7 +149,7 @@ npm test                 # 빌드, 타입 검사, 회귀 검사
 npm run desktop:test     # 실제 Electron 화면 흐름 검사
 ```
 
-Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. Windows 설치본의 [자동 업데이트와 GitHub Actions 배포](문서/자동업데이트.md)를 제공합니다. 정식 코드 서명과 공개 릴리스, 깨끗한 Windows에서의 설치 수용은 별도 출시 조건입니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
+Windows 개발 설치와 실제 앱 흐름, Windows·Linux의 기반 빌드와 회귀 검사를 확인했습니다. Windows 설치본의 [자동 업데이트와 GitHub Actions 배포](문서/자동업데이트.md)를 제공합니다. 이번 공개 설치본에는 코드 서명이 없습니다. 깨끗한 Windows에서의 설치와 공개 버전 간 업데이트는 별도 검증이 필요합니다. 현재 앱은 신뢰하는 프로젝트용이며 악성 프로젝트 코드를 격리하는 샌드박스를 제공하지 않습니다. 검증 근거와 자세한 지원 범위는 [개발 현황](https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md)에서 확인할 수 있습니다.
 
 ## 더 알아보기.
 
