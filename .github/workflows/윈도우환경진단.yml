@@ -1,0 +1,19 @@
+name: Windows 자식 환경 관측
+on:
+  push:
+    branches: ['work/2026-10-04-윈도우환경진단']
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.18.0'
+      - name: 같은 명령의 제한 환경과 상속 환경 비교
+        run: node scripts/윈도우환경진단.mjs
