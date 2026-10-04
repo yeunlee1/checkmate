@@ -56,7 +56,7 @@ export async function verifyArtifacts(report, identity) {
     lines.push(`${item.sha256}  ${basename(item.path)}`);
   }
   const metadata = await readFile(release.path, 'utf8');
-  if (metadata.startsWith('\uFEFF')) throw new Error('기존 앱 호환을 위해 RELEASES의 선두 BOM을 제작 단계에서 제거해야 합니다.');
+  if (metadata.includes('\uFEFF')) throw new Error('기존 앱 호환을 위해 RELEASES에 BOM이 남아 있으면 안 됩니다.');
   const feed = metadata.trim().split(/\r?\n/);
   if (feed.length !== 1) throw new Error('전체 패키지 하나의 업데이트 목록이 필요합니다.');
   const match = feed[0].match(/^([a-f0-9]{40})\s+([^\s/\\]+)\s+(\d+)$/i);

@@ -81,9 +81,13 @@ it('실제 바이트와 RELEASES 및 제작 지문이 맞아야 배포 목록을
   expect((await validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3' })).folder).toBe(folder);
   const feedPath = join(folder, 'RELEASES');
   const feed = await readFile(feedPath);
-  await writeFile(feedPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), feed]));
-  const bomArtifacts = await Promise.all(artifacts.map(async item => ({ ...item, sha256: createHash('sha256').update(await readFile(item.path)).digest('hex') })));
-  await expect(validator.verifyArtifacts({ ...report, artifacts: bomArtifacts }, { commit: 'fixed', version: '1.2.3' })).rejects.toThrow('BOM');
+  const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+  for (const invalidFeed of [Buffer.concat([bom, feed]), Buffer.concat([feed, bom]), Buffer.concat([Buffer.from(' '), bom, feed])]) {
+    await writeFile(feedPath, invalidFeed);
+    const bomArtifacts = await Promise.all(artifacts.map(async item => ({ ...item, sha256: createHash('sha256').update(await readFile(item.path)).digest('hex') })));
+    await expect(validator.verifyArtifacts({ ...report, artifacts: bomArtifacts }, { commit: 'fixed', version: '1.2.3' })).rejects.toThrow('BOM');
+  }
+  await writeFile(feedPath, Buffer.concat([bom, feed]));
   await validator.normalizeReleaseFeed(feedPath);
   expect((await validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3' })).folder).toBe(folder);
   await expect(validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3', requireSigned: true })).rejects.toThrow('서명');
