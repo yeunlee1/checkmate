@@ -42,6 +42,8 @@ export function assertStoreSchema(db: Database.Database): number {
 
 export function assertMigrationIdle(db: Database.Database): void {
   const refuse = () => { throw new StoreSchemaError('storage-busy', '진행 또는 정리가 확인되지 않은 기록이 있어 저장 이행을 거부합니다.'); };
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_locks'").get()
+    && db.prepare('SELECT 1 FROM execution_locks LIMIT 1').get()) refuse();
   if (db.prepare("SELECT 1 FROM runs WHERE state IN ('queued','running') OR finalized_at IS NULL LIMIT 1").get()) refuse();
   for (const row of db.prepare("SELECT id,state,summary_json FROM runs WHERE origin='live'").all() as { id: string; state: string; summary_json: string }[]) {
     const parsed = resultInputSchema.safeParse(JSON.parse(row.summary_json));

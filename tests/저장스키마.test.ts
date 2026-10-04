@@ -121,6 +121,25 @@ describe('SQLite 저장 스키마', () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name='run_storage_locations'").get()).toBeUndefined();
   });
 
+  it('버전 2의 남은 잠금은 정리 완료 표시가 있어도 이행하지 않고 보존한다.', () => {
+    db = new Database(fixture.dbPath);
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    const ids = seed(true);
+    db.exec(concurrencySql);
+    db.prepare('INSERT INTO schema_migrations VALUES (2,?,?,?)').run(concurrencyChecksum, time, 'synthetic-v2');
+    const lease = JSON.stringify({ id: randomUUID(), state: 'unknown' });
+    db.prepare('INSERT INTO execution_locks VALUES (?,?)').run(ids.runId, lease);
+    const before = db.prepare('SELECT * FROM runs').all();
+    db.close(); db = undefined;
+    expect(() => connectStore(fixture.dbPath, { migrate: true })).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+    db = new Database(fixture.dbPath, { readonly: true });
+    expect(assertStoreSchema(db)).toBe(2);
+    expect(db.prepare('SELECT * FROM runs').all()).toEqual(before);
+    expect(db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(ids.runId)).toEqual({ lease_json: lease });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name='run_storage_locations'").get()).toBeUndefined();
+  });
+
   it('저장 설정과 실행 위치는 존재하는 대상에만 연결하고 중복 위치를 거절한다.', () => {
     const connection = open();
     const ids = seed();
