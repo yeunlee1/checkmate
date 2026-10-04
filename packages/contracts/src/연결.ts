@@ -11,6 +11,7 @@ const storageSelection = {
 };
 export const apiInputs = {
   capabilities: z.strictObject({}),
+  'update-readiness': z.strictObject({}),
   projects: z.strictObject({ ...pagination }),
   register: z.strictObject({ path: z.string().min(1).max(4096) }),
   'project-storage': z.strictObject({ projectId: uuid }),
@@ -56,7 +57,7 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run', 'preview-project-storage', 'apply-project-storage']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run', 'preview-project-storage', 'apply-project-storage', 'update-readiness']);
 
 export type ProjectStorageSettings = {
   projectId: string; configuredRoot: string | null; namespaceId: string | null;

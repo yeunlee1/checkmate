@@ -262,10 +262,25 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     assert.equal((await new AxeBuilder({ page }).setLegacyMode().analyze()).violations.length, 0);
     await page.screenshot({ path: join(artifacts, `위반위치-${zoom}.png`), fullPage: true });
   }
+  // 실제 격리 경계를 건너온 평문 오류도 시작 읽기 재시도로 복구해야 한다.
+  const connectionInfo = await page.evaluate(() => window.checkmate.connectionInfo());
+  const historyBeforeReconnect = await page.evaluate(id => window.checkmate.request('history', { projectId: id }), projectId);
+  await app.evaluate(({ ipcMain }, info) => {
+    globalThis.checkmateStartupReads = 0;
+    ipcMain.removeHandler('checkmate:connection-info');
+    ipcMain.handle('checkmate:connection-info', () => ++globalThis.checkmateStartupReads === 1
+      ? { apiVersion: 1, ok: false, error: { code: 'update-in-progress', message: '합성 업데이트 대기', retryable: true, nextAction: '' } }
+      : info);
+  }, connectionInfo);
+  await page.reload();
+  await expect(page.getByTestId('project-select').locator(`option[value="${workspaceId}"]`)).toHaveCount(1, { timeout: 12000 });
+  assert.equal(await app.evaluate(() => globalThis.checkmateStartupReads), 2);
+  const historyAfterReconnect = await page.evaluate(id => window.checkmate.request('history', { projectId: id }), projectId);
+  assert.deepEqual(historyAfterReconnect.data, historyBeforeReconnect.data);
   assert.deepEqual(errors, []);
   const report = { passed: true, runId, projectId, workspaceId, realPath, security, sizes, errors, reportExport: true, backupRestore: true, importedHistory: true, designOverlay: true,
     liveProgress: true, englishInterface: true, languagePersistence: true, englishReport: true, bundledFont: true,
-    runEvidenceIsolation: true, compactNavigationLabels: true, englishResourceApproval: true,
+    runEvidenceIsolation: true, compactNavigationLabels: true, englishResourceApproval: true, startupStructuredErrorRecovery: true,
     scope: '실제 Electron과 로컬 SQLite 및 작업 프로세스. OS 파일 선택 결과만 합성 경로로 고정.' };
   await writeFile(join(artifacts, '결과.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));

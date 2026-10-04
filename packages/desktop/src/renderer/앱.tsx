@@ -8,11 +8,12 @@ import { Help } from './도움말.js';
 import { TestResources } from './시험자원.js';
 import { UpdateSettings } from './업데이트설정.js';
 import { ProjectStorageFolder } from './프로젝트자료폴더.js';
+import { readStartupConnection, StartupConnectionFailure } from './시작연결복구.js';
 import type { UpdateState } from '../main/업데이트.js';
 import { useLanguage, text } from './언어.js';
 
 type Bridge = {
-  update(action: 'status' | 'check' | 'apply'): Promise<UpdateState>;
+  update(action: 'status' | 'check' | 'download' | 'apply'): Promise<UpdateState>;
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
   chooseDirectory(purpose?: 'backup' | 'restore' | 'project-storage'): Promise<string | null>;
   chooseReport(): Promise<string | null>;
@@ -84,6 +85,9 @@ const evidenceReasonLabels: Translations = { missing: ['파일 없음', 'File mi
   'unsafe-path': ['안전하지 않은 경로', 'Unsafe path'], 'not-file': ['일반 파일 아님', 'Not a regular file'],
   'io-error': ['파일 읽기 실패', 'File read failed'], quarantined: ['격리 상태', 'Quarantined'], staged: ['등록 대기 상태', 'Staged'] };
 const errorLabels: Translations = { 'needs-approval': ['실행 전에 계획 범위를 승인해야 합니다.', 'Approve the plan scope before running.'],
+  'startup-timeout': ['90초 안에 연결을 확인하지 못했습니다. 서비스를 확인한 뒤 다시 연결해 주세요.', 'Connection could not be verified within 90 seconds. Check the service and reconnect.'],
+  'connection-root-unconfirmed': ['서비스의 자료 위치를 확인할 수 없어 사용을 제한했습니다. 구 서비스라면 유휴 상태에서 갱신한 뒤 다시 연결해 주세요.', 'Service data location is unconfirmed, so access is restricted. Update an older service when idle, then reconnect.'],
+  'connection-root-mismatch': ['앱과 서비스의 자료 위치가 달라 사용을 제한했습니다. 같은 자료 폴더로 연결해 주세요.', 'App and service data locations differ, so access is restricted. Connect to the same data folder.'],
   'source-unreadable': ['프로젝트 검사 파일이 없거나 읽을 수 없습니다.', 'Project check files are missing or unreadable.'],
   'plan-stale': ['계획 이후 원본이 바뀌었습니다. 계획을 다시 확인해 주세요.', 'The source changed after planning. Review the plan again.'],
   'catalog-stale': ['프로젝트 원본이 활성 기준과 다릅니다. 변경 내용을 확인해 주세요.', 'The source differs from the active catalog. Review the changes.'],
@@ -138,6 +142,7 @@ async function request<T>(method: ApiMethod, input: Record<string, unknown> = {}
 }
 
 function errorText(error: unknown): string {
+  if (error instanceof StartupConnectionFailure) return label(errorLabels, error.code);
   if (error instanceof RequestFailure) return `${label(errorLabels, error.code, text(error.message, 'The request could not be completed.'))} ${label(errorActions, error.code, text(error.nextAction, 'Review the run state and try again.'))}`.trim();
   return text('연결을 확인할 수 없습니다. 서비스를 확인한 뒤 다시 시도해 주세요.', 'Connection could not be verified. Check the service and try again.');
 }
@@ -287,6 +292,9 @@ export function App() {
   const selectedRunRef = useRef('');
   const busyRef = useRef(false);
   const storageApplyingRef = useRef(false);
+  const startupRef = useRef<AbortController | null>(null);
+  const startupGenerationRef = useRef(0);
+  const startupDataPathRef = useRef<string | null>(null);
   const project = projects.find((item) => item.workspaceId === workspaceId) ?? null;
   const storageCapabilities = capabilities as { capabilities?: string[]; connection?: { dataRoot?: string } | null } | null;
   const storageSupported = Array.isArray(storageCapabilities?.capabilities) && storageCapabilities.capabilities.includes('project-storage');
@@ -310,12 +318,36 @@ export function App() {
   const projectInput = (id: string, workspace: string) => guiProjectInput(capabilitiesRef.current, selectionPage, id, workspace);
   const matchesProject = (result: { projectId: string; workspaceId?: string }, id: string, workspace: string) =>
     guiWorkspaceMatches(capabilitiesRef.current, selectionPage, id, workspace, result);
-  async function readCapabilities() {
+  function cancelStartup() {
+    startupGenerationRef.current++;
+    startupRef.current?.abort(); startupRef.current = null;
+  }
+  async function connectStartup(): Promise<boolean> {
+    if (startupRef.current) return false;
+    const controller = new AbortController(); const generation = ++startupGenerationRef.current;
+    const selected = selectedProjectRef.current; startupRef.current = controller;
     setConnectionGeneration(value => value + 1);
-    capabilitiesRef.current = null; setCapabilities(null); setServiceReady(false);
-    setPlan(null); setConsent(false); setSummary(null); setProgress(null); setHandoffConsent(false);
-    const value = await request<unknown>('capabilities');
-    capabilitiesRef.current = value; setCapabilities(value);
+    setServiceReady(false); setLoading(true);
+    const current = () => startupRef.current === controller && startupGenerationRef.current === generation && selectedProjectRef.current === selected;
+    try {
+      const result = await readStartupConnection({
+        readConnectionInfo: () => window.checkmate!.connectionInfo(),
+        readCapabilities: () => request<unknown>('capabilities'),
+        readProjects: () => request<Page<ProjectInfo>>('projects'),
+      }, { signal: controller.signal, ...(startupDataPathRef.current === null ? {} : { expectedDataPath: startupDataPathRef.current }) });
+      if (!current()) return false;
+      startupDataPathRef.current = result.connection.dataPath;
+      capabilitiesRef.current = result.capabilities; setCapabilities(result.capabilities); setConnection(result.connection);
+      setProjects(result.projects.items); setProjectCursor(result.projects.nextCursor); setProjectTotal(result.projects.total);
+      setNeedsInitialization(false); setServiceReady(true); return true;
+    } catch (error) {
+      if (current()) {
+        setServiceReady(false);
+        setNeedsInitialization(error instanceof RequestFailure && error.code === 'needs-initialization');
+        if (!(error instanceof RequestFailure && error.code === 'needs-initialization')) showError(error);
+      }
+      return false;
+    } finally { if (current()) { startupRef.current = null; setLoading(false); } }
   }
   const phaseLabels: Translations = { queued: ['대기 중', 'Queued'], preparing: ['실행 준비 중', 'Preparing'], running: ['검사 실행 중', 'Running checks'],
     verifying: ['결과 확인 중', 'Verifying results'], cleaning: ['자원 정리 중', 'Cleaning up'], finished: ['실행 종료', 'Finished'], unavailable: ['진행 진단 미확인', 'Progress diagnostics unavailable'] };
@@ -368,24 +400,8 @@ export function App() {
 
   useEffect(() => {
     if (!connected) { setLoading(false); return; }
-    let active = true;
-    void (async () => {
-      try {
-        await readCapabilities();
-        const info = await window.checkmate!.connectionInfo();
-        if (active) setConnection(info);
-        const result = await request<Page<ProjectInfo>>('projects');
-        if (active) { setProjects(result.items); setProjectCursor(result.nextCursor); setProjectTotal(result.total); }
-        if (active) setServiceReady(true);
-      } catch (error) {
-        if (active) {
-          setServiceReady(false);
-          if (error instanceof RequestFailure && error.code === 'needs-initialization') setNeedsInitialization(true);
-          else showError(error);
-        }
-      } finally { if (active) setLoading(false); }
-    })();
-    return () => { active = false; };
+    void connectStartup();
+    return cancelStartup;
   }, [connected]);
 
   useEffect(() => {
@@ -421,6 +437,7 @@ export function App() {
 
   function selectProject(id: string, registered?: ProjectInfo) {
     if (storageApplyingRef.current) return;
+    if (startupRef.current) { cancelStartup(); setLoading(false); }
     const selected = registered ?? projects.find(item => item.workspaceId === id);
     const selectedId = selected?.id ?? '';
     selectedProjectRef.current = id;
@@ -454,22 +471,13 @@ export function App() {
   async function initialize() {
     await action('initialize', async () => {
       await window.checkmate!.initializeLocalStore();
-      await readCapabilities();
-      setConnection(await window.checkmate!.connectionInfo());
-      await loadProjects();
-      setNeedsInitialization(false); setServiceReady(true);
+      if (!await connectStartup()) return;
        setNotice('로컬 저장소가 준비되었습니다. 프로젝트를 선택해 등록할 수 있습니다.', 'Local storage is ready. You can now add a project.');
     });
   }
   async function retryConnection() {
     await action('connection-retry', async () => {
-      try { await readCapabilities(); }
-      catch (error) {
-        if (error instanceof RequestFailure && error.code === 'needs-initialization') setNeedsInitialization(true);
-        throw error;
-      }
-      setConnection(await window.checkmate!.connectionInfo());
-      await loadProjects(); setServiceReady(true);
+      if (!await connectStartup()) return;
        setNotice('로컬 서비스에 연결했습니다.', 'Connected to the local service.');
     });
   }

@@ -16,6 +16,8 @@ import { BackupError, migrateStoredData } from './저장/백업.js';
 import { acquireServiceOwnership } from './서비스/상주서비스.js';
 import { dataPaths, rejectLinks } from './연결/개인경로.js';
 import { exportRunHtml } from './서비스/보고서내보내기.js';
+import { inspectUpdateReadiness } from './연결/업데이트준비.js';
+import { createManagedInvoker } from './연결/관리형브리지.js';
 
 const program = new Command();
 let jsonMode = false;
@@ -30,6 +32,10 @@ program.name('checkmate').description('사람과 AI가 함께 사용하는 로�
   .exitOverride()
   .configureOutput({ writeErr: () => {} });
 program.hook('preAction', () => { jsonMode = program.opts().json === true; });
+
+program.command('update-readiness').description('업데이트 전에 실행과 정리 상태를 읽기 전용으로 확인한다.').action(async () => {
+  write(await inspectUpdateReadiness(dataPaths(program.opts().dataDir).root), '업데이트 준비 상태를 확인했습니다.');
+});
 
 program.command('doctor').description('현재 실행 환경과 구현 범위를 확인한다.').action(() => {
   const supportedRuntime = Number(process.versions.node.split('.')[0]) === 24;
@@ -183,6 +189,11 @@ program.command('migrate-storage').description('서비스가 유휴 종료된 �
       output({ apiVersion: 1, requestId: randomUUID(), ok: true, data: { migrated: true, dataRoot: paths.root, ...saved } });
     } finally { await release(); }
   });
+program.command('mcp-managed').description('업데이트 뒤 새 연결 세션으로 복구하는 관리형 MCP 서버를 시작한다.')
+  .requiredOption('--installation-root <path>', '관리형 연결을 만든 설치 루트를 고정한다.').action(async options => {
+    await startAgentServer(createManagedInvoker(resolve(options.installationRoot), dataPaths(program.opts().dataDir).root));
+  });
+
 program.command('mcp').description('기존 구독 AI가 사용하는 stdio 서버를 시작한다.')
   .action(async () => { await startAgentServer(createAgentInvoker(clientOptions())); });
 

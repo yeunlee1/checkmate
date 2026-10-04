@@ -17,7 +17,7 @@ import { DatabaseResources } from '../자원/격리데이터베이스.js';
 import { NativePostgresResources } from '../자원/네이티브포스트그레스.js';
 import { createProjectExecutor } from './검사실행기.js';
 import { ProductService } from './제품서비스.js';
-import { assertInstallationAvailable } from '../연결/업데이트잠금.js';
+import { assertInstallationAvailable, installationRoot } from '../연결/업데이트잠금.js';
 
 const ownerSchema = z.strictObject({ id: z.uuid(), pid: z.number().int().positive(), startedAt: z.iso.datetime() });
 export async function acquireServiceOwnership(paths: DataPaths): Promise<() => Promise<void>> {
@@ -88,7 +88,17 @@ export async function startLocalService(root?: string, idleMs = 60000, options: 
           JSON.stringify({ previousState: old.state, reason: 'service-restarted', recovery: queued ? '작업 시작 전 중단돼 정리할 실행 자원이 없습니다.' : '종료와 정리를 직접 확인하지 못했습니다.' }));
     }
     let touched = Date.now();
-    const endpoint = await serveLocal(paths, async (request, role, context) => { touched = Date.now(); return product.handle(request, role, context); }, product.sessions);
+    const endpoint = await serveLocal(paths, async (request, role, context) => {
+      // 구 클라이언트도 설치 잠금 중에는 새 요청을 접수하지 않으며 거절로 유휴 시각을 늦추지 않는다.
+      if (request.method !== 'update-readiness') {
+        await assertInstallationAvailable();
+        touched = Date.now();
+      }
+      const response = await product.handle(request, role, context);
+      if (request.method === 'update-readiness' && response.ok && typeof response.data === 'object' && response.data !== null)
+        return { ...response, data: { ...response.data, installationRoot: await installationRoot() } };
+      return response;
+    }, product.sessions);
     let closing: Promise<void> | undefined;
     const database = db;
     const close = (): Promise<void> => {

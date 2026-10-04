@@ -30,6 +30,7 @@ import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { SharedLocks, defaultSharedLockRoot, executionLockKeys } from '../연결/공유잠금.js';
 import type { Lease } from '../연결/공유잠금.js';
 import { ProjectStorage } from '../저장/프로젝트자료.js';
+import { assertMigrationIdle } from '../저장/연결.js';
 
 const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run', 'preview-project-storage', 'apply-project-storage']);
 
@@ -84,7 +85,7 @@ export class ProductService {
     switch (request.method) {
       case 'capabilities':
         apiInputs.capabilities.parse(raw);
-        return { version: engineVersion, apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
+        return { version: engineVersion, apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure, serviceEpoch: this.sessions.epoch,
           connection: this.paths ? { dataRoot: this.paths.root } : null,
           ...(role === 'human' ? { controlOwners: this.sessions.list() } : {}),
           agentSession: context ? { ownerId: context.ownerId, serviceEpoch: context.serviceEpoch } : null,
@@ -97,6 +98,12 @@ export class ProductService {
             nativeResourceRoot: this.resourceController?.nativeResourceRoot ?? null, binaryReadiness: 'verified-per-plan-and-before-use' },
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
+      case 'update-readiness': {
+        apiInputs['update-readiness'].parse(raw);
+        let ready = !this.active && !this.storageFailure;
+        try { assertMigrationIdle(this.db); } catch { ready = false; }
+        return { ready, version: engineVersion, dataRoot: this.paths?.root ?? null, serviceEpoch: this.sessions.epoch };
+      }
       case 'projects': {
         const input = apiInputs.projects.parse(raw);
         return boundedPage(this.projects.list(), 'projects', input.cursor, input.limit);
