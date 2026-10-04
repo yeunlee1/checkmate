@@ -56,6 +56,10 @@ export function errorResponse(requestId: string, error: unknown): ApiResponse {
   if (error instanceof z.ZodError) return { apiVersion: 1, requestId, ok: false, error: { code: 'invalid-input', message: '입력 형식과 필수 항목을 확인해 주세요.', retryable: false, nextAction: '도구의 입력 계약에 맞게 요청해 주세요.' } };
   if (error instanceof ServiceError) return { apiVersion: 1, requestId, ok: false, error: { code: error.code, message: error.message, retryable: error.retryable, nextAction: error.nextAction } };
   const known = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'internal-error';
+  if (known === 'project-conflict' || known === 'catalog-stale') return { apiVersion: 1, requestId, ok: false, error: {
+    code: known, message: known === 'project-conflict' ? '등록된 프로젝트와 선택한 경로의 연결이 일치하지 않습니다.' : '검사 원본과 활성 검사 목록이 일치하지 않습니다.', retryable: false,
+    nextAction: known === 'project-conflict' ? '프로젝트 식별자와 등록 경로를 확인하고 기존 등록을 임의로 교체하지 마세요.' : '검사 목록의 변경을 비교하고 사람이 새 기준을 확인한 뒤 계획을 다시 조회해 주세요.',
+  } };
   const allowed = new Set(['invalid-input', 'invalid-project', 'source-unreadable', 'source-too-large', 'source-changed', 'project-not-found', 'plan-stale', 'request-conflict', 'workspace-busy', 'storage-busy', 'storage-error', 'run-not-found', 'invalid-state', 'evidence-not-found', 'evidence-conflict', 'evidence-missing', 'evidence-degraded', 'evidence-restricted', 'unsupported-version', 'schema-mismatch', 'storage-corrupt']);
   return { apiVersion: 1, requestId, ok: false, error: { code: allowed.has(known) ? known : 'internal-error', message: '요청 처리 중 확인이 필요한 문제가 발생했습니다.', retryable: known === 'storage-busy', nextAction: '입력과 서비스 진단 결과를 확인해 주세요.' } };
 }
