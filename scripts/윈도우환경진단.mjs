@@ -7,10 +7,10 @@ const keys = ['SystemRoot', 'WINDIR', 'TEMP', 'TMP'];
 const pick = names => Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
 const shell = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe');
 const variants = [
-  ['minimal', pick(keys)],
-  ['profile', pick([...keys, 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'])],
-  ['system-paths', pick([...keys, 'PATH', 'PSModulePath'])],
-  ['inherited', process.env],
+  ['path-only', pick([...keys, 'PATH'])],
+  ['module-only', pick([...keys, 'PSModulePath'])],
+  ['trusted-modules', { ...pick(keys), PSModulePath: join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/Modules') }],
+  ['minimal-after', pick(keys)],
 ];
 for (const [variant, env] of variants) {
   for (const [probe, script] of [
