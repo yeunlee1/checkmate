@@ -29,8 +29,9 @@ import type { CallerContext } from '../연결/세션제어.js';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
 import { SharedLocks, defaultSharedLockRoot, executionLockKeys } from '../연결/공유잠금.js';
 import type { Lease } from '../연결/공유잠금.js';
+import { ProjectStorage } from '../저장/프로젝트자료.js';
 
-const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run']);
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run', 'preview-project-storage', 'apply-project-storage']);
 
 export class ProductService {
   readonly sessions = new SessionControl();
@@ -44,12 +45,15 @@ export class ProductService {
   private writing = 0;
   private readonly cleaning = new Set<string>();
   readonly resources: ResourceStore;
+  readonly storage: ProjectStorage;
 
   constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths,
     private readonly resourceController?: Pick<DatabaseResources, 'cleanup'> & { nativeResourceRoot?: string | undefined }, options: { lockRoot?: string } = {}) {
     this.locks = new SharedLocks(options.lockRoot ?? (paths ? defaultSharedLockRoot() : join(dirname(db.name), '공유잠금')), paths?.root ?? dirname(db.name));
-    this.projects = new ProjectStore(db, resourceController?.nativeResourceRoot);
-    this.runs = new SQLiteRunStore(db);
+    this.storage = new ProjectStorage(db, evidence.runsRoot, [paths?.root ?? dirname(db.name), this.locks.root,
+      ...(resourceController?.nativeResourceRoot ? [resourceController.nativeResourceRoot] : [])]);
+    this.projects = new ProjectStore(db, resourceController?.nativeResourceRoot, this.storage);
+    this.runs = new SQLiteRunStore(db, this.storage);
     this.execution = new RunService(this.runs, executor, (plan, runId) => this.preflight(plan, runId));
     this.resources = new ResourceStore(db);
   }
@@ -85,7 +89,7 @@ export class ProductService {
           ...(role === 'human' ? { controlOwners: this.sessions.list() } : {}),
           agentSession: context ? { ownerId: context.ownerId, serviceEpoch: context.serviceEpoch } : null,
           coordination: { lockRoot: this.locks.root, scope: 'same-host-user-and-lock-root', undeclaredResourcesProtected: false },
-          capabilities: ['shared-resource-locks', 'multi-workspace', 'agent-run-control', 'run-handoff', 'projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images',
+          capabilities: ['project-storage', 'shared-resource-locks', 'multi-workspace', 'agent-run-control', 'run-handoff', 'projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images',
             ...(process.platform === 'win32' ? ['native-postgres-resource-provider'] : [])],
           databaseResources: databaseResourceKinds,
           resourceProviders: { modes: ['docker', ...(process.platform === 'win32' ? ['native'] : [])],
@@ -96,6 +100,26 @@ export class ProductService {
       case 'projects': {
         const input = apiInputs.projects.parse(raw);
         return boundedPage(this.projects.list(), 'projects', input.cursor, input.limit);
+      }
+      case 'project-storage': {
+        const input = apiInputs['project-storage'].parse(raw);
+        return this.storage.settings(input.projectId);
+      }
+      case 'project-storage-operation': {
+        const input = apiInputs['project-storage-operation'].parse(raw);
+        return this.storage.operation(input.projectId, input.operationId);
+      }
+      case 'preview-project-storage': {
+        const input = apiInputs['preview-project-storage'].parse(raw);
+        if (this.pending.size > 0 || this.writing !== 1) throw new ServiceError('storage-busy');
+        return this.storage.preview(input.projectId, input.root, input.expectedRevision);
+      }
+      case 'apply-project-storage': {
+        const input = apiInputs['apply-project-storage'].parse(raw);
+        if (this.pending.size > 0 || this.writing !== 1) throw new ServiceError('storage-busy');
+        this.maintenance = true;
+        try { return await this.storage.apply(input.projectId, input.previewId, input.expectedRevision, input.fingerprint, request.requestId); }
+        finally { this.maintenance = false; }
       }
       case 'open-agent-session': {
         apiInputs['open-agent-session'].parse(raw);
@@ -168,7 +192,7 @@ export class ProductService {
         const requestHash = createHash('sha256').update(JSON.stringify(owner
           ? ['start', input.projectId, plan.workspace.id, input.planId, plan.plan.fingerprint]
           : [input.projectId, input.planId, request.requestId])).digest('hex');
-        const lease = this.locks.acquire(runId, owner?.ownerId ?? null, requestHash, this.planLockKeys(plan));
+        const lease = this.locks.acquire(runId, owner?.ownerId ?? null, requestHash, this.planLockKeys(plan, runId));
         let accepted: { runId: string; reused: boolean };
         try {
           accepted = this.execution.start({ ...input, requestId: request.requestId }, {
@@ -200,6 +224,7 @@ export class ProductService {
       }
       case 'progress': {
         const input = apiInputs.progress.parse(raw);
+        this.requireRun(input.runId);
         return { ...this.execution.progress(input.runId), ...this.runs.metadata(input.runId) };
       }
       case 'result': {
@@ -325,6 +350,7 @@ export class ProductService {
         const input = apiInputs.history.parse(raw);
         const project = this.projects.get(input.projectId, input.workspaceId);
         const page = this.runs.listRuns(input.projectId, Math.min(input.limit ?? 10, 10), input.cursor, project.workspaceId);
+        for (const run of page.runs) this.storage.resolveRun(run.runId);
         return { items: page.runs.map((run) => ({ runId: run.runId, profile: run.profile, origin: run.origin, state: run.state, verdict: run.verdict, finalized: run.finalized, ...this.runs.metadata(run.runId) })), nextCursor: page.nextCursor };
       }
       case 'import-history': {
@@ -372,11 +398,12 @@ export class ProductService {
     }
   }
 
-  private planLockKeys(plan: PlanRegistration): string[] {
+  private planLockKeys(plan: PlanRegistration, runId?: string): string[] {
     const source = projectSourceSchema.parse(plan.catalog.source);
     const ids = new Set(source.checks.filter(check => plan.plan.plannedChecks.includes(check.id)).map(check => check.commandId));
     const commands = source.project.commands.filter(command => ids.has(command.id));
-    return executionLockKeys(plan.workspace.realPath, commands.flatMap(command => command.writes), commands.flatMap(command => command.exclusiveResources ?? []));
+    return executionLockKeys(plan.workspace.realPath, commands.flatMap(command => command.writes), commands.flatMap(command => command.exclusiveResources ?? []),
+      plan.plan.outputStorage && runId ? [join(plan.plan.outputStorage.runsRoot, runId)] : []);
   }
   private checkedExecutionLease(runId: string): { lease: Lease; json: string } | null {
     const row = this.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(runId) as { lease_json: string } | undefined;
@@ -386,7 +413,7 @@ export class ProductService {
     catch { throw new ServiceError('lock-ownership-unknown'); }
     const plan = this.runs.getPlan(this.runs.metadata(runId).planId);
     if (!plan) throw new ServiceError('lock-ownership-unknown');
-    this.locks.assert(lease, this.planLockKeys(plan));
+    this.locks.assert(lease, this.planLockKeys(plan, runId));
     return { lease, json: row.lease_json };
   }
   private releaseExecutionLock(runId: string): void {
@@ -409,12 +436,13 @@ export class ProductService {
   private requireRun(runId: string): RunResult {
     const run = this.runs.getRun(runId);
     if (!run) throw new ServiceError('run-not-found');
+    this.storage.resolveRun(runId);
     return run;
   }
   private async integrity(run: RunResult): Promise<'verified' | 'degraded' | 'pending'> {
     if (!run.finalized) return 'pending';
     if (!run.evidenceVerified) return 'degraded';
-    for (const id of new Set(run.cases.flatMap((item) => item.evidenceIds))) {
+    for (const id of new Set([...run.cases.flatMap((item) => item.evidenceIds), ...this.evidence.list(run.runId).map(item => item.id)])) {
       try { if ((await this.evidence.inspect(run.runId, id)).integrity !== 'verified') return 'degraded'; }
       catch { return 'degraded'; }
     }

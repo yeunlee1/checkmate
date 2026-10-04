@@ -8,15 +8,16 @@ import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { projectSourceSchema, type ProjectDefinition, type ProjectSnapshot, type ProjectSource } from '@checkmate/contracts/project';
-import type { PlanRegistration } from '@checkmate/contracts/runs';
+import { outputStorageSchema, type PlanRegistration, type OutputStorageSnapshot } from '@checkmate/contracts/runs';
 import { SQLiteRunStore } from './실행저장.js';
+import type { ProjectStorage } from './프로젝트자료.js';
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const snapshotSchema = z.strictObject({ realPath: z.string(), source: projectSourceSchema,
   contentHash: hashSchema, sourceHash: hashSchema });
 const scopeSchema = z.strictObject({ planId: z.uuid(), fingerprint: hashSchema,
   sourceHash: hashSchema, writes: z.array(z.string()), commands: z.array(projectSourceSchema.shape.project.shape.commands.element),
-  nativeResourceRoot: z.string().min(1).max(4096).optional() });
+  nativeResourceRoot: z.string().min(1).max(4096).optional(), outputStorage: outputStorageSchema.optional() });
 
 export type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
@@ -24,7 +25,7 @@ export type CatalogChange = { projectId: string; workspaceId: string; contentHas
   added: string[]; removed: string[]; changed: string[]; weakened: string[] };
 export type PlanReview = { planId: string; projectId: string; workspaceId: string; realPath: string; profile: string; fingerprint: string; sourceHash: string;
   checks: { id: string; title: string; required: boolean }[]; commands: ProjectDefinition['commands'];
-  writes: string[]; resourceEffects: string[]; needsApproval: boolean; nativeResourceRoot?: string };
+  writes: string[]; resourceEffects: string[]; needsApproval: boolean; nativeResourceRoot?: string; outputStorage?: OutputStorageSnapshot };
 
 export class ProjectStoreError extends Error {
   constructor(public readonly code: string) { super('프로젝트 저장 작업을 처리할 수 없습니다.'); }
@@ -113,7 +114,8 @@ function changes(before: ProjectSource, after: ProjectSource): Omit<CatalogChang
 
 export class ProjectStore {
   private readonly runs: SQLiteRunStore;
-  constructor(private readonly db: Database.Database, private readonly nativeResourceRoot?: string) { this.runs = new SQLiteRunStore(db); }
+  constructor(private readonly db: Database.Database, private readonly nativeResourceRoot?: string,
+    private readonly storage?: ProjectStorage) { this.runs = new SQLiteRunStore(db, storage); }
 
   private project(id: string): ProjectRow {
     if (!z.uuid().safeParse(id).success) throw new ProjectStoreError('invalid-input');
@@ -281,9 +283,11 @@ export class ProjectStore {
               || realpathSync.native(this.nativeResourceRoot) !== this.nativeResourceRoot) throw new Error('native-resource-root');
           }
         } catch { throw new ProjectStoreError('invalid-input'); }
+        const outputStorage = this.storage?.planSnapshot(projectId, workspace.id);
         const fingerprint = sha256(canonical({ projectId, workspaceId: workspace.id, realPath: workspace.real_path,
           catalogHash: catalog.row.content_hash, sourceHash: value.sourceHash, profileId,
           checks: selected.checks, commands: selected.commands, node: process.version,
+          ...(outputStorage ? { outputStorage } : {}),
           ...(provider?.mode === 'native' ? { nativeResourceRoot: this.nativeResourceRoot } : {}) }));
         const old = this.db.prepare('SELECT * FROM plans WHERE workspace_id = ? AND catalog_id = ? AND fingerprint = ? ORDER BY created_at, id LIMIT 1')
           .get(workspace.id, catalog.row.id, fingerprint) as PlanRow | undefined;
@@ -299,6 +303,7 @@ export class ProjectStore {
           createdAt: new Date().toISOString(),
         };
         if (provider?.mode === 'native') registration.plan.nativeResourceRoot = this.nativeResourceRoot!;
+        if (outputStorage) registration.plan.outputStorage = outputStorage;
         if (old) {
           const stored = this.runs.getPlan(old.id);
           if (!stored || !isDeepStrictEqual(stored.project, registration.project)
@@ -310,6 +315,7 @@ export class ProjectStore {
         return { planId, projectId, workspaceId: workspace.id, realPath: workspace.real_path, profile: profileId, fingerprint, sourceHash: value.sourceHash,
           checks: selected.checks.map(({ id, title, required }) => ({ id, title, required })),
           commands: selected.commands, writes: selected.writes,
+          ...(outputStorage ? { outputStorage } : {}),
           ...(provider?.mode === 'native' ? { nativeResourceRoot: this.nativeResourceRoot! } : {}),
           resourceEffects: provider?.mode === 'native' ? [
             `네이티브 PostgreSQL ${provider.postgresVersion}를 등록된 실제 실행 파일 폴더 ${provider.binaryRoot}에서 실행합니다.`,
@@ -341,6 +347,9 @@ export class ProjectStore {
     if (catalog.row.project_id !== project.id || catalog.row.content_hash !== registration.catalog.contentHash
       || !isDeepStrictEqual(catalog.source, registration.catalog.source)) throw new ProjectStoreError('storage-error');
     const selected = selection(catalog.source, registration.plan.profile);
+    if (this.storage) {
+      try { this.storage.assertPlan(registration); } catch { throw new ProjectStoreError('plan-stale'); }
+    }
     let provider;
     try { provider = selectedResourceProvider(selected.commands); }
     catch { throw new ProjectStoreError('plan-stale'); }
@@ -354,6 +363,7 @@ export class ProjectStore {
     } else if (registration.plan.nativeResourceRoot !== undefined) throw new ProjectStoreError('plan-stale');
     const scope: ApprovalScope = { planId, fingerprint: registration.plan.fingerprint,
       sourceHash: registration.plan.sourceHash, writes: selected.writes, commands: selected.commands,
+      ...(registration.plan.outputStorage ? { outputStorage: registration.plan.outputStorage } : {}),
       ...(provider?.mode === 'native' ? { nativeResourceRoot: registration.plan.nativeResourceRoot } : {}) };
     return { row, project, registration, scope, active: this.activeCatalog(row.workspace_id) === row.catalog_id };
   }

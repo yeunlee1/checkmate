@@ -10,6 +10,7 @@ import { dataPaths, prepareDataPaths, rejectLinks, type DataPaths } from '../연
 import { verifyEvidence } from '../증거검증.js';
 import { storeMigrations } from './스키마.js';
 import { assertMigrationIdle, assertStoreSchema, connectStore, StoreSchemaError } from './연결.js';
+import { ProjectStorage, restoredRunLocations } from './프로젝트자료.js';
 
 const databaseName = 'checkmate.sqlite';
 const manifestName = '백업명세.json';
@@ -18,7 +19,7 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const fileSchema = z.strictObject({ path: z.string().min(1), sha256: hashSchema,
   byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
 const manifestSchema = z.strictObject({ formatVersion: z.literal(1), id: z.uuid(),
-  createdAt: z.iso.datetime(), schemaVersion: z.number().int().min(1).max(2), schemaChecksum: hashSchema,
+  createdAt: z.iso.datetime(), schemaVersion: z.number().int().min(1).max(3), schemaChecksum: hashSchema,
   files: z.array(fileSchema).min(1) }).refine(value => storeMigrations.some(item => item.version === value.schemaVersion && item.checksum === value.schemaChecksum), '지원하지 않는 저장 스키마입니다.');
 
 export type BackupManifest = z.infer<typeof manifestSchema>;
@@ -97,7 +98,7 @@ function sameEvidence(left: EvidenceRow[], right: EvidenceRow[]): boolean {
 
 async function privatePath(path: string, file = false): Promise<void> {
   if (process.platform !== 'win32') { await chmod(path, file ? 0o600 : 0o700); return; }
-  const encoded = Buffer.from(path, 'utf8').toString('base64');
+  const encoded = Buffer.from(`\\\\?\\${resolve(path)}`, 'utf8').toString('base64');
   const kind = file ? 'File' : 'Directory';
   const inheritance = file ? 'None' : 'ContainerInherit,ObjectInherit';
   const script = `$ErrorActionPreference='Stop'; $target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')); $identity=[Security.Principal.WindowsIdentity]::GetCurrent(); $sid=$identity.User; $acl=[IO.${kind}]::GetAccessControl($target); $owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]); if (-not $owner.Equals($sid)) { if (-not $owner.Equals($identity.Owner)) { throw 'owner-mismatch' }; $acl.SetOwner($sid) }; $acl.SetAccessRuleProtection($true,$false); foreach ($old in @($acl.Access)) { $acl.RemoveAccessRuleAll($old) }; $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','${inheritance}','None','Allow'); $acl.AddAccessRule($rule); [IO.${kind}]::SetAccessControl($target,$acl)`;
@@ -268,7 +269,7 @@ export async function migrateStoredData(paths: DataPaths): Promise<{ backupDirec
   let saved: BackupResult;
   try {
     if (original.pragma('quick_check', { simple: true }) !== 'ok') throw new StoreSchemaError('storage-corrupt', '원본 저장 파일의 무결성이 손상됐습니다.');
-    if (assertStoreSchema(original) !== 1) throw new StoreSchemaError('invalid-state', '이행 대상인 버전 1 저장 파일이 아닙니다.');
+    if (![1, 2].includes(assertStoreSchema(original))) throw new StoreSchemaError('invalid-state', '이행 대상인 버전 1 또는 2 저장 파일이 아닙니다.');
     assertMigrationIdle(original);
     saved = await createBackup(original, paths, join(paths.root, 'backups'));
     await verifyBackup(saved.backupDirectory);
@@ -296,6 +297,13 @@ export async function createBackup(db: Database.Database, paths: DataPaths, back
   if (!actual || normalized(await realpath(actual)) !== normalized(await realpath(join(paths.state, databaseName))))
     fail('invalid-path', '연결된 SQLite 파일이 관리 자료 폴더와 다릅니다.');
   const rows = validateDatabase(db);
+  const storage = assertStoreSchema(db) >= 3 ? new ProjectStorage(db, paths.runs) : null;
+  for (const runId of new Set(rows.map(row => row.run_id))) {
+    let runRoot: string;
+    try { runRoot = await canonicalLocation(storage?.resolveRun(runId) ?? join(paths.runs, runId)); }
+    catch { fail('file-invalid', '원본 실행 위치를 확인할 수 없습니다.'); }
+    if (within(runRoot, destination) || within(destination, runRoot)) fail('invalid-path', '외부 실행 자료와 백업 폴더가 겹칩니다.');
+  }
   const before = snapshot(db);
   await mkdir(destination, { recursive: true, mode: 0o700 });
   await rejectLinks(destination);
@@ -322,11 +330,15 @@ export async function createBackup(db: Database.Database, paths: DataPaths, back
     for (const row of rows) {
       const path = evidencePath(row);
       const entry = { path, sha256: row.sha256, byteLength: row.byte_length };
-      await checkedCopy(paths.root, directory, entry);
+      let sourceRoot: string;
+      try { sourceRoot = storage?.resolveRun(row.run_id) ?? join(paths.runs, row.run_id); }
+      catch { fail('file-invalid', '원본 실행 위치를 확인할 수 없습니다.'); }
+      const targetRunRoot = join(directory, 'runs', row.run_id);
+      await checkedCopy(sourceRoot, targetRunRoot, { ...entry, path: row.relative_path });
       files.push(entry);
     }
-    for (const row of rows) await checkedFile(paths.root,
-      { path: evidencePath(row), sha256: row.sha256, byteLength: row.byte_length });
+    for (const row of rows) await checkedFile(storage?.resolveRun(row.run_id) ?? join(paths.runs, row.run_id),
+      { path: row.relative_path, sha256: row.sha256, byteLength: row.byte_length });
     const after = snapshot(db);
     if (before.version !== after.version || before.changes !== after.changes
       || !sameEvidence(before.evidence, after.evidence))
@@ -376,8 +388,12 @@ export async function restoreBackup(backupDirectory: string, targetRoot: string)
     created = true;
     await prepareDataPaths(stagedPaths);
     for (const entry of manifest.files) await checkedCopy(source, staging, entry);
-    const stagedDb = new Database(join(stagedPaths.state, databaseName), { readonly: true, fileMustExist: true });
-    try { validateDatabase(stagedDb); } finally { stagedDb.close(); }
+    const stagedDb = new Database(join(stagedPaths.state, databaseName), { fileMustExist: true });
+    try {
+      validateDatabase(stagedDb);
+      stagedDb.transaction(() => restoredRunLocations(stagedDb, join(target, 'runs'))).immediate();
+      stagedDb.pragma('journal_mode = DELETE');
+    } finally { stagedDb.close(); }
     if (existed) {
       // 기존의 빈 폴더는 지우지 않는다. 자료 표식을 마지막에 두어 부분 복구를 서비스가 거부하도록 한다.
       if ((await readdir(target)).length !== 0) fail('target-not-empty', '복구 대상이 작업 중 변경됐습니다.');

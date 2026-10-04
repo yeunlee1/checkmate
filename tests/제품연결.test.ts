@@ -93,6 +93,9 @@ it('CLI 등록과 승인 후 실행하고 MCP에서 같은 확정 결과와 증�
   cleanup.push(restoredService.close);
   const preserved = await restoredService.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'result', input: { runId, section: 'summary' } }, 'human');
   expect(preserved).toMatchObject({ ok: true, data: { runId, verdict: 'passed', integrity: 'verified' } });
+  expect(restoredService.product.storage.settings(f.projectId)).toMatchObject({ configuredRoot: null, revision: 1 });
+  expect(await restoredService.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'start', input: { projectId: f.projectId, planId: plan.planId } }, 'human'))
+    .toMatchObject({ ok: false, error: { code: 'plan-stale' } });
   expect(await f.service.product.handle({ apiVersion: 1, requestId: randomUUID(), method: 'backup', input: {} }, 'agent'))
     .toMatchObject({ ok: false, error: { code: 'human-action-required' } });
   const evidenceId: string = cases[0].evidenceIds[0];
