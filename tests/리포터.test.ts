@@ -119,14 +119,14 @@ describe('대표 예제와 부모 검사실행기', () => {
         expect(result.evidenceVerified).toBe(true);
         expect(result.cleanupVerified).toBe(true);
         expect(result.cases).toHaveLength(5);
-        expect(evidence.filter(item => item.relativePath === '화면.png')).toHaveLength(1);
-        expect(evidence.filter(item => item.relativePath === '디자인위치.json' && item.sensitivity === 'public')).toHaveLength(1);
+        expect(evidence.filter(item => item.relativePath === 'artifacts/화면.png')).toHaveLength(1);
+        expect(evidence.filter(item => item.relativePath === 'artifacts/디자인위치.json' && item.sensitivity === 'public')).toHaveLength(1);
         expect(events.filter(item => item.type === 'case-result')).toHaveLength(5);
         for (const item of evidence) expect((await evidenceStore.inspect(started.runId, item.id)).integrity).toBe('verified');
-        const design = JSON.parse(await readFile(join(runsRoot, started.runId, '디자인위치.json'), 'utf8')) as {
+        const design = JSON.parse(await readFile(join(runsRoot, started.runId, 'artifacts', '디자인위치.json'), 'utf8')) as {
           kind: string; screenshotEvidenceId: string; viewport: { width: number }; findings: { selector: string; boundingBox: { x: number; width: number } }[] };
         expect(design.kind).toBe('checkmate-design');
-        expect(design.screenshotEvidenceId).toBe(evidence.find(item => item.relativePath === '화면.png')?.id);
+        expect(design.screenshotEvidenceId).toBe(evidence.find(item => item.relativePath === 'artifacts/화면.png')?.id);
         expect(design.viewport.width).toBe(400);
         expect(design.findings[0]?.selector).toBe('#decor');
         const response = await product.handle(apiRequestSchema.parse({ apiVersion: 1, requestId: randomUUID(),

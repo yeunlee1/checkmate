@@ -13,6 +13,8 @@ on:
       - 'forge.config.cjs'
       - 'scripts/개발설치본.mjs'
       - 'scripts/자동업데이트검증.mjs'
+      - 'scripts/프로젝트자료폴더화면검증.mjs'
+      - 'scripts/프로젝트자료폴더통합검증.mjs'
       - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
@@ -54,6 +56,21 @@ jobs:
       - run: npx playwright install chromium
       - run: npm test
       - run: npm run desktop:test
+      - run: node scripts/프로젝트자료폴더화면검증.mjs
+      - run: node scripts/프로젝트자료폴더통합검증.mjs
+      - name: 프로젝트 자료 폴더 화면 검증 근거 보관
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: project-storage-acceptance
+          include-hidden-files: true
+          path: |
+            .runtime/프로젝트저장폴더/화면구현/*/합성화면검증.json
+            .runtime/프로젝트저장폴더/화면구현/*/*.png
+            .runtime/프로젝트자료통합검증/*/검증결과.json
+            .runtime/프로젝트자료통합검증/*/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - name: 정식 배포 인증서 준비
         if: github.event_name == 'push' && github.ref_type == 'tag' && env.CHECKMATE_ALLOW_UNSIGNED_RELEASE != 'true'
         shell: pwsh

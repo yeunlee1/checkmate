@@ -141,7 +141,7 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
     if (cancellation) await cancellation;
     const command = result.state === 'finished'
       && ['exit-pass', 'ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
-      ? JSON.parse(await readFile(join(runsRoot, started.runId, '명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
+      ? JSON.parse(await readFile(join(runsRoot, started.runId, 'results/명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
       : null;
     const repair = mode === 'ndjson-many-fail' ? await new ProductService(db, evidence, async () => result, undefined, undefined, { lockRoot: join(fixture.directory, '공유잠금') }).handle({
       apiVersion: 1, requestId: randomUUID(), method: 'result',
@@ -226,7 +226,7 @@ describe('고정 계획 검사실행기', () => {
       environmentVerified: true, evidenceVerified: true, cleanupVerified: true });
     expect(result.cases).toMatchObject([{ testId: 'check-1', status: 'passed' }]);
     expect(command).toMatchObject({ status: 'exited', exitCode: 0 });
-    expect(evidence).toHaveLength(1);
+    expect(evidence.map(item => item.relativePath).sort()).toEqual(['results/명령-1.json', 'logs/명령-1-stdout.log', 'logs/명령-1-stderr.log', 'results/실행관측.json'].sort());
   });
 
   it.runIf(process.platform === 'win32')('대소문자 별칭을 실제 경로로 정규화하여 실행한다.', async () => {
@@ -237,7 +237,7 @@ describe('고정 계획 검사실행기', () => {
     });
     expect(result).toMatchObject({ state: 'finished', verdict: 'passed', workerExitCode: 0,
       environmentVerified: true, evidenceVerified: true, cleanupVerified: true });
-    expect(evidence).toHaveLength(1);
+    expect(evidence.map(item => item.relativePath).sort()).toEqual(['results/명령-1.json', 'logs/명령-1-stdout.log', 'logs/명령-1-stderr.log', 'results/실행관측.json'].sort());
   });
 
   it.runIf(process.platform === 'win32')('실행 폴더의 상위 junction을 거절한다.', async () => {
@@ -256,7 +256,7 @@ describe('고정 계획 검사실행기', () => {
     expect(result).toMatchObject({ verdict: 'passed', workerExitCode: 0, environmentVerified: true,
       evidenceVerified: true, cleanupVerified: true });
     expect(result.cases).toMatchObject([{ testId: 'check-1', status: 'passed' }]);
-    expect(evidence).toHaveLength(1);
+    expect(evidence.map(item => item.relativePath).sort()).toEqual(['results/명령-1.json', 'logs/명령-1-stdout.log', 'logs/명령-1-stderr.log', 'results/실행관측.json'].sort());
   });
 
   it('명령의 비영 종료는 worker 정상 종료와 구분하여 실패로 남긴다.', async () => {
@@ -278,7 +278,7 @@ describe('고정 계획 검사실행기', () => {
     expect(result.verdict).not.toBe('passed');
     expect(result.cases[0]?.status).toBe(mode === 'ndjson-timeout' ? 'timed-out' : 'unknown');
     expect(result.workerExitCode).toBe(0);
-    expect(evidence).toHaveLength(1);
+    expect(evidence.map(item => item.relativePath).sort()).toEqual(['results/명령-1.json', 'logs/명령-1-stdout.log', 'logs/명령-1-stderr.log', 'results/실행관측.json'].sort());
     expect(command).toMatchObject({ status: mode === 'ndjson-timeout' ? 'timed-out' : 'output-limit', exitCode: null });
   });
 
@@ -335,7 +335,7 @@ describe('고정 계획 검사실행기', () => {
     const { result, evidence, events } = await scenario('two-commands');
     expect(result.verdict).toBe('passed');
     expect(result.cases.map((item) => item.testId)).toEqual(['check-1', 'check-2']);
-    expect(evidence).toHaveLength(2);
+    expect(evidence.map(item => item.relativePath).sort()).toEqual(['results/명령-1.json', 'logs/명령-1-stdout.log', 'logs/명령-1-stderr.log', 'results/명령-2.json', 'logs/명령-2-stdout.log', 'logs/명령-2-stderr.log', 'results/실행관측.json'].sort());
     expect(events.map((item) => item.sequence)).toEqual([1, 2]);
   });
   it('NDJSON unknown 검사는 명령 종료0이어도 unknown을 유지한다', async () => {

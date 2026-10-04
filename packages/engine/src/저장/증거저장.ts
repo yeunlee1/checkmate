@@ -6,12 +6,13 @@ import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { verifyEvidence } from '../증거검증.js';
+import { ProjectStorage } from './프로젝트자료.js';
 
 const uuid = z.uuid();
 const inputSchema = z.strictObject({
   id: uuid, relativePath: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-  mime: z.enum(['text/plain', 'application/json', 'text/html', 'image/png', 'image/jpeg', 'application/zip']),
+  mime: z.enum(['text/plain', 'application/json', 'text/html', 'image/png', 'image/jpeg', 'application/zip', 'application/octet-stream']),
   sensitivity: z.enum(['public', 'restricted']),
 });
 const descriptorSchema = inputSchema.extend({ runId: uuid, state: z.enum(['staged', 'ready', 'missing', 'quarantined']) });
@@ -52,7 +53,7 @@ function failure(error: unknown): never {
 function descriptor(row: Row): EvidenceDescriptor {
   const parsed = descriptorSchema.safeParse({ id: row.id, runId: row.run_id, relativePath: row.relative_path,
     sha256: row.sha256, byteLength: row.byte_length, mime: row.mime, sensitivity: row.sensitivity, state: row.state });
-  if (!parsed.success) throw new EvidenceStoreError('storage-error');
+  if (!parsed.success || (parsed.data.mime === 'application/octet-stream' && parsed.data.sensitivity !== 'restricted')) throw new EvidenceStoreError('storage-error');
   return parsed.data;
 }
 
@@ -67,7 +68,8 @@ function sameFile(a: { dev: bigint; ino: bigint; size: bigint; mtimeNs: bigint; 
 }
 
 export class EvidenceStore {
-  private readonly runsRoot: string;
+  readonly runsRoot: string;
+  private readonly storage: ProjectStorage;
 
   constructor(private readonly db: Database.Database, runsRoot: string) {
     if (typeof runsRoot !== 'string' || !isAbsolute(runsRoot)) throw new EvidenceStoreError('invalid-input');
@@ -83,12 +85,16 @@ export class EvidenceStore {
       const actual = realpathSync.native(root);
       this.runsRoot = actual;
     } catch { throw new EvidenceStoreError('invalid-input'); }
+    this.storage = new ProjectStorage(db, this.runsRoot);
   }
 
   private root(runId: string): string {
     if (!uuid.safeParse(runId).success) throw new EvidenceStoreError('invalid-input');
-    return join(this.runsRoot, runId);
+    try { return this.storage.resolveRun(runId); }
+    catch (error) { throw new EvidenceStoreError(error instanceof Error && 'code' in error ? String(error.code) : 'storage-error'); }
   }
+
+  runRoot(runId: string): string { return this.root(runId); }
 
   private get(runId: string, evidenceId: string): EvidenceDescriptor {
     this.root(runId);
@@ -104,7 +110,8 @@ export class EvidenceStore {
   async register(runId: string, input: EvidenceInput): Promise<EvidenceDescriptor> {
     const root = this.root(runId);
     const parsed = inputSchema.safeParse(input);
-    if (!parsed.success) throw new EvidenceStoreError('invalid-input');
+    if (!parsed.success || ((parsed.data.mime === 'application/octet-stream' || /^(?:logs|results)\//u.test(parsed.data.relativePath))
+      && parsed.data.sensitivity !== 'restricted')) throw new EvidenceStoreError('invalid-input');
     const candidate: EvidenceDescriptor = { ...parsed.data, runId, state: 'ready' };
     try {
       if (!this.db.prepare('SELECT 1 FROM runs WHERE id = ?').get(runId)) throw new EvidenceStoreError('run-not-found');
@@ -136,10 +143,26 @@ export class EvidenceStore {
   }
 
   list(runId: string): EvidenceDescriptor[] {
-    this.root(runId);
+    if (!uuid.safeParse(runId).success) throw new EvidenceStoreError('invalid-input');
+    if (this.db.prepare('SELECT 1 FROM runs WHERE id=?').get(runId)) this.root(runId);
     try {
       return (this.db.prepare('SELECT * FROM evidence WHERE run_id = ? ORDER BY id').all(runId) as Row[]).map(descriptor);
     } catch (error) { failure(error); }
+  }
+
+  async replaceCollected(runId: string, collectedId: string, input: EvidenceInput): Promise<void> {
+    const root = this.root(runId);
+    const parsed = inputSchema.parse(input);
+    if (parsed.mime === 'application/octet-stream' && parsed.sensitivity !== 'restricted') throw new EvidenceStoreError('invalid-input');
+    const prior = this.get(runId, collectedId);
+    if (prior.sensitivity !== 'restricted' || prior.relativePath !== parsed.relativePath || prior.sha256 !== parsed.sha256
+      || prior.byteLength !== parsed.byteLength || /^(?:logs|results)\//u.test(prior.relativePath)) throw new EvidenceStoreError('evidence-conflict');
+    if ((await verifyEvidence(root, manifest(parsed))).status !== 'verified') throw new EvidenceStoreError('evidence-degraded');
+    this.db.transaction(() => {
+      if (!isDeepStrictEqual(this.get(runId, collectedId), prior)) throw new EvidenceStoreError('evidence-conflict');
+      this.db.prepare('UPDATE evidence SET id=?,mime=?,sensitivity=? WHERE id=? AND run_id=?')
+        .run(parsed.id, parsed.mime, parsed.sensitivity, collectedId, runId);
+    })();
   }
 
   async inspect(runId: string, evidenceId: string): Promise<{

@@ -67,6 +67,9 @@ export async function callService(request: ApiRequest, options: ClientOptions = 
   const probe = await connectService(options);
   if (!probe.ok) return { ...probe, requestId: request.requestId };
   const capabilities = typeof probe.data === 'object' && probe.data !== null && 'capabilities' in probe.data && Array.isArray(probe.data.capabilities) ? probe.data.capabilities as unknown[] : [];
+  if (['project-storage', 'preview-project-storage', 'apply-project-storage', 'project-storage-operation'].includes(request.method)
+    && !capabilities.includes('project-storage')) return errorResponse(request.requestId,
+      new ServiceError('service-update-required', '연결된 서비스가 프로젝트별 자료 저장을 지원하지 않습니다.', false, updateGuidance));
   if ((role === 'agent' && ['start', 'cancel', 'open-agent-session'].includes(request.method) && !capabilities.includes('agent-run-control'))
     || (request.input.workspaceId !== undefined && !capabilities.includes('multi-workspace'))
     || (request.method === 'handoff-run' && !capabilities.includes('run-handoff'))) {

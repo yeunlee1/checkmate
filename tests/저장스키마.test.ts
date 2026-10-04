@@ -4,8 +4,8 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { connectStore } from '../packages/engine/src/저장/연결.js';
-import { schemaChecksum, schemaSql, concurrencySql, currentSchemaTables, storeMigrations } from '../packages/engine/src/저장/스키마.js';
+import { assertStoreSchema, connectStore } from '../packages/engine/src/저장/연결.js';
+import { schemaChecksum, schemaSql, concurrencySql, concurrencyChecksum, currentSchemaTables, storeMigrations } from '../packages/engine/src/저장/스키마.js';
 import { createStoreFixture } from './저장시험자료.js';
 
 const time = '2026-09-25T03:00:00.000Z';
@@ -79,7 +79,81 @@ describe('SQLite 저장 스키마', () => {
     const reopened = open();
     expect(reopened.prepare('SELECT name FROM projects WHERE id = ?').get(ids.projectId)).toEqual({ name: '합성 프로젝트' });
     expect(reopened.prepare('SELECT id FROM runs WHERE id = ?').get(ids.runId)).toEqual({ id: ids.runId });
-    expect(reopened.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 2 });
+    expect(reopened.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
+  });
+
+  it('기존 버전 2는 자기 테이블로 검증하고 명시 이행 전에는 원본을 보존한다.', async () => {
+    db = new Database(fixture.dbPath);
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    const ids = seed(true);
+    db.exec(concurrencySql);
+    db.prepare('INSERT INTO schema_migrations VALUES (2,?,?,?)').run(concurrencyChecksum, time, 'synthetic-v2');
+    const before = db.prepare('SELECT * FROM runs').all();
+    expect(assertStoreSchema(db)).toBe(2);
+    db.close(); db = undefined;
+    const bytes = await readFile(fixture.dbPath);
+    expect(() => connectStore(fixture.dbPath)).toThrowError(expect.objectContaining({ code: 'migration-required' }));
+    expect(await readFile(fixture.dbPath)).toEqual(bytes);
+    db = connectStore(fixture.dbPath, { migrate: true });
+    expect(assertStoreSchema(db)).toBe(3);
+    expect(db.prepare('SELECT * FROM runs').all()).toEqual(before);
+    expect(db.prepare('SELECT * FROM project_storage_settings').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM run_storage_locations').all()).toEqual([]);
+    expect(db.prepare('SELECT id FROM runs WHERE id=?').get(ids.runId)).toEqual({ id: ids.runId });
+    expect(db.prepare('SELECT version,checksum FROM schema_migrations ORDER BY version').all())
+      .toEqual(storeMigrations.map(({ version, checksum }) => ({ version, checksum })));
+  });
+
+  it('진행 중인 버전 2는 저장 위치 표를 만들지 않고 명시 이행도 거절한다.', () => {
+    db = new Database(fixture.dbPath);
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    seed();
+    db.exec(concurrencySql);
+    db.prepare('INSERT INTO schema_migrations VALUES (2,?,?,?)').run(concurrencyChecksum, time, 'synthetic-v2');
+    const before = db.prepare('SELECT * FROM runs').all();
+    db.close(); db = undefined;
+    expect(() => connectStore(fixture.dbPath, { migrate: true })).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+    db = new Database(fixture.dbPath, { readonly: true });
+    expect(assertStoreSchema(db)).toBe(2);
+    expect(db.prepare('SELECT * FROM runs').all()).toEqual(before);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name='run_storage_locations'").get()).toBeUndefined();
+  });
+
+  it('버전 2의 남은 잠금은 정리 완료 표시가 있어도 이행하지 않고 보존한다.', () => {
+    db = new Database(fixture.dbPath);
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    const ids = seed(true);
+    db.exec(concurrencySql);
+    db.prepare('INSERT INTO schema_migrations VALUES (2,?,?,?)').run(concurrencyChecksum, time, 'synthetic-v2');
+    const lease = JSON.stringify({ id: randomUUID(), state: 'unknown' });
+    db.prepare('INSERT INTO execution_locks VALUES (?,?)').run(ids.runId, lease);
+    const before = db.prepare('SELECT * FROM runs').all();
+    db.close(); db = undefined;
+    expect(() => connectStore(fixture.dbPath, { migrate: true })).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+    db = new Database(fixture.dbPath, { readonly: true });
+    expect(assertStoreSchema(db)).toBe(2);
+    expect(db.prepare('SELECT * FROM runs').all()).toEqual(before);
+    expect(db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(ids.runId)).toEqual({ lease_json: lease });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name='run_storage_locations'").get()).toBeUndefined();
+  });
+
+  it('저장 설정과 실행 위치는 존재하는 대상에만 연결하고 중복 위치를 거절한다.', () => {
+    const connection = open();
+    const ids = seed();
+    const storageId = randomUUID();
+    const settings = connection.prepare('INSERT INTO project_storage_settings VALUES (?,?,?,?,?)');
+    expect(() => settings.run(randomUUID(), storageId, 'C:/synthetic/output', 1, time)).toThrow();
+    settings.run(ids.projectId, storageId, 'C:/synthetic/output', 1, time);
+    const location = connection.prepare('INSERT INTO run_storage_locations VALUES (?,?,?,?,?,?)');
+    expect(() => location.run(randomUUID(), 'C:/synthetic/run', storageId, 1, 1, time)).toThrow();
+    location.run(ids.runId, 'C:/synthetic/run', storageId, 1, 1, time);
+    const second = seed();
+    expect(() => location.run(second.runId, 'C:/synthetic/run', storageId, 1, 1, time)).toThrow();
+    expect(() => settings.run(second.projectId, randomUUID(), null, 0, time)).toThrow();
+    expect(() => location.run(second.runId, 'C:/synthetic/other', null, -1, 1, time)).toThrow();
   });
 
   it('연결 FK와 중복, 열거값, JSON 제약을 거절한다.', () => {

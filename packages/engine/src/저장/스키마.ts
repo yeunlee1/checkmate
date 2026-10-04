@@ -278,7 +278,32 @@ CREATE TABLE execution_locks (
 );
 `;
 export const concurrencyChecksum = createHash('sha256').update(concurrencySql, 'utf8').digest('hex');
-export const currentSchemaVersion = 2;
-export const currentSchemaTables = [...schemaTables, 'workspace_catalog_state', 'run_control_owners', 'owner_requests', 'execution_locks'] as const;
+export const concurrencySchemaTables = [...schemaTables, 'workspace_catalog_state', 'run_control_owners', 'owner_requests', 'execution_locks'] as const;
+
+// 기존 SQL은 보존하고 프로젝트 설정과 실행 자료의 실제 위치만 추가한다.
+export const projectStorageSql = `
+CREATE TABLE project_storage_settings (
+  project_id TEXT NOT NULL PRIMARY KEY REFERENCES projects(id) ON DELETE RESTRICT,
+  storage_id TEXT NOT NULL UNIQUE CHECK (${uuid('storage_id')}),
+  root_path TEXT CHECK (root_path IS NULL OR length(root_path) BETWEEN 1 AND 4096),
+  revision INTEGER NOT NULL CHECK (typeof(revision)='integer' AND revision>0),
+  updated_at TEXT NOT NULL CHECK (${utc('updated_at')})
+);
+CREATE TABLE run_storage_locations (
+  run_id TEXT NOT NULL PRIMARY KEY REFERENCES runs(id) ON DELETE RESTRICT,
+  root_path TEXT NOT NULL UNIQUE CHECK (length(root_path) BETWEEN 1 AND 4096),
+  storage_id TEXT CHECK (storage_id IS NULL OR ${uuid('storage_id')}),
+  setting_revision INTEGER NOT NULL CHECK (typeof(setting_revision)='integer' AND setting_revision>=0),
+  layout_version INTEGER NOT NULL CHECK (typeof(layout_version)='integer' AND layout_version=1),
+  created_at TEXT NOT NULL CHECK (${utc('created_at')})
+);
+`;
+export const projectStorageChecksum = createHash('sha256').update(projectStorageSql, 'utf8').digest('hex');
+export const currentSchemaVersion = 3;
+export const currentSchemaTables = [...concurrencySchemaTables, 'project_storage_settings', 'run_storage_locations'] as const;
+export const schemaTablesByVersion: Readonly<Record<number, readonly string[]>> = {
+  1: schemaTables, 2: concurrencySchemaTables, 3: currentSchemaTables,
+};
 export const storeMigrations = [{ version: schemaVersion, checksum: schemaChecksum, sql: schemaSql },
-  { version: currentSchemaVersion, checksum: concurrencyChecksum, sql: concurrencySql }] as const;
+  { version: 2, checksum: concurrencyChecksum, sql: concurrencySql },
+  { version: currentSchemaVersion, checksum: projectStorageChecksum, sql: projectStorageSql }] as const;

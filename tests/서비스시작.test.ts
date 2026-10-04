@@ -213,7 +213,7 @@ it('네 독립 클라이언트가 하나의 PID와 DB에 붙고 유휴 종료 �
   expect(new Set(rows.map((row) => row.pid)).size).toBe(1);
   expect(new Set(rows.map((row) => row.id)).size).toBe(1);
   expect(new Set(rows.map((row) => row.file)).size).toBe(1);
-  expect(rows.every((row) => row.version === 2)).toBe(true);
+  expect(rows.every((row) => row.version === 3)).toBe(true);
   const firstPid = rows[0]!.pid;
   const lock = join(paths.runtime, '서비스소유.json');
   const deadline = Date.now() + 12000;
@@ -268,7 +268,9 @@ it.each(['admitted', 'intent', 'generation', 'corrupt', 'marker', 'prepared-clea
   if (!plan) throw new Error('합성 계획 실패');
   expect((await call('approve', { planId: plan.planId, fingerprint: plan.fingerprint })).ok).toBe(true);
   const owner = first.product.sessions.verify(first.product.sessions.open().credential);
-  const runId = randomUUID(), lease = first.product.locks.acquire(runId, owner.ownerId, 'a'.repeat(64), executionLockKeys(project.projectRoot, ['.runtime']));
+  const runId = randomUUID(), registeredPlan = first.product.runs.getPlan(plan.planId)!;
+  const lease = first.product.locks.acquire(runId, owner.ownerId, 'a'.repeat(64), executionLockKeys(project.projectRoot, ['.runtime'], [],
+    [join(registeredPlan.plan.outputStorage!.runsRoot, runId)]));
   first.product.runs.admitRun({ projectId: project.projectId, planId: plan.planId, requestId: randomUUID(), runId, requestHash: 'a'.repeat(64), createdAt: new Date().toISOString(), owner, lease: { ...lease } });
   first.product.locks.admit(lease);
   const prior = first.product.locks.acquire(randomUUID(), null, 'b'.repeat(64), ['named:prior-protected']); first.product.locks.admit(prior);

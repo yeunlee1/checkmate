@@ -69,7 +69,7 @@ it.each(['positive-cleanup', 'imported-unknown', 'human-confirmed', 'cleaned-res
   const copied = new Database(join(saved.backupDirectory, 'state', 'checkmate.sqlite'), { readonly: true, fileMustExist: true });
   try { expect(copied.prepare('SELECT summary_json FROM runs').get()).toEqual({ summary_json: f.original });
     expect(copied.prepare('SELECT * FROM schema_migrations').all()).toEqual(before.schema); } finally { copied.close(); }
-  const current = f.snapshot(); expect(current.schema).toHaveLength(2); expect(current.runs).toEqual(before.runs);
+  const current = f.snapshot(); expect(current.schema).toHaveLength(3); expect(current.runs).toEqual(before.runs);
   expect(current.resources).toEqual(before.resources); expect(current.audit).toEqual(before.audit);
 });
 
@@ -172,7 +172,7 @@ it('새 CLI 명시 이행은 완성된 v1 백업 proof를 반환하고 기존 �
   const saved = result.response.data as { backupDirectory: string; manifestHash: string };
   expect(hash(await readFile(join(saved.backupDirectory, '백업명세.json')))).toBe(saved.manifestHash);
   expect((await verifyBackup(saved.backupDirectory)).schemaVersion).toBe(1);
-  expect(f.snapshot().runs).toEqual(before.runs); expect(f.snapshot().schema).toHaveLength(2);
+  expect(f.snapshot().runs).toEqual(before.runs); expect(f.snapshot().schema).toHaveLength(3);
 });
 
 it.each(['queued', 'cleanup-null', 'no-confirm', 'service-owner'] as const)('새 CLI %s는 이행과 원본 변경을 거부한다.', async mode => {

@@ -5,10 +5,19 @@ const uuid = z.uuid();
 const workspace = { workspaceId: uuid.optional() };
 const id = z.string().min(1).max(160);
 const pagination = { cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional() };
+const storageSelection = {
+  projectId: uuid, root: z.string().min(1).max(4096).refine(value => !/[\x00-\x1f\x7f]/u.test(value)).nullable(),
+  expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+};
 export const apiInputs = {
   capabilities: z.strictObject({}),
   projects: z.strictObject({ ...pagination }),
   register: z.strictObject({ path: z.string().min(1).max(4096) }),
+  'project-storage': z.strictObject({ projectId: uuid }),
+  'preview-project-storage': z.strictObject(storageSelection),
+  'apply-project-storage': z.strictObject({ projectId: uuid, previewId: uuid,
+    expectedRevision: storageSelection.expectedRevision, fingerprint: z.string().regex(/^[a-f0-9]{64}$/), confirm: z.literal(true) }),
+  'project-storage-operation': z.strictObject({ projectId: uuid, operationId: uuid }),
   checks: z.strictObject({ projectId: uuid, ...workspace, ...pagination }),
   inspect: z.strictObject({ projectId: uuid, ...workspace, profile: id }),
   approve: z.strictObject({ planId: uuid, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
@@ -47,7 +56,25 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run', 'preview-project-storage', 'apply-project-storage']);
+
+export type ProjectStorageSettings = {
+  projectId: string; configuredRoot: string | null; namespaceId: string | null;
+  revision: number; defaultRunsRoot: string; layoutVersion: 1;
+};
+export type ProjectStoragePreview = {
+  projectId: string; previewId: string; expectedRevision: number; currentRoot: string | null; targetRoot: string | null;
+  destinationRoot: string; fingerprint: string; runCount: number; fileCount: number; byteLength: number;
+  originalsPreserved: true;
+};
+export type ProjectStorageApplied = {
+  settings: ProjectStorageSettings; operationId: string; movedRunCount: number; fileCount: number; byteLength: number;
+  originalsPreserved: true;
+};
+export type ProjectStorageOperation = {
+  projectId: string; operationId: string; state: 'not-found' | 'copying' | 'completed' | 'failed' | 'unknown';
+  result?: ProjectStorageApplied; error?: string;
+};
 
 export class ServiceError extends Error {
   constructor(readonly code: string, message = '요청을 처리할 수 없습니다.', readonly retryable = false, readonly nextAction = '입력과 현재 상태를 확인해 주세요.') {

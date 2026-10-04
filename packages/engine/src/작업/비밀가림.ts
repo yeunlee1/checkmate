@@ -24,3 +24,16 @@ export function hideSecretsInNdjson(stdout: string, secrets: readonly string[]):
     catch { return hideSecrets(line, secrets); }
   }).join('\n');
 }
+
+// 알려진 비밀과 출력 제한에서 잘린 접미부 및 기존 인증 키 표현을 로그에서 가린다.
+export function hideCommandOutput(value: string, secrets: readonly string[], truncated = false): string {
+  let result = hideSecrets(value, secrets);
+  if (truncated) for (const secret of secrets.filter(Boolean)) {
+    for (const candidate of [secret, JSON.stringify(secret).slice(1, -1)]) {
+      for (let size = Math.min(candidate.length - 1, result.length); size > 0; size -= 1) {
+        if (result.endsWith(candidate.slice(0, size))) { result = result.slice(0, -size) + '[가림]'; break; }
+      }
+    }
+  }
+  return result.replace(/((?:authorization|cookie|bearer|token|password|secret|api[ _-]?key)[\s"']*[:=]?[\s"']*)[^\r\n]*/giu, '$1[가림]');
+}

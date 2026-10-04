@@ -254,6 +254,14 @@ td strong { display: block; }
 .case-head > div { min-width: 0; overflow-wrap: anywhere; }
 .project-detail > .muted { margin-bottom: 14px; }
 .project-tile:disabled { opacity: .65; }
+.project-storage-container { min-width: 0; }
+.project-storage-container[hidden] { display: none; }
+.project-storage-panel .detail-actions { flex-wrap: wrap; }
+.project-storage-panel button { max-width: 100%; white-space: normal; }
+.storage-details > div { min-width: 0; }
+.storage-details dd { overflow-wrap: anywhere; }
+.storage-operation { margin-top: 16px; padding: 12px; border: 1px solid var(--line); border-radius: 7px; background: #f8fafc; overflow-wrap: anywhere; }
+.storage-operation p + p, .storage-operation button { margin-top: 8px; }
 
 @media (max-width: 940px) {
   .app-shell { display: flex; flex-direction: column; }
