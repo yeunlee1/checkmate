@@ -84,9 +84,14 @@ try {
   assert.ok(original.some(file => file.relativePath.startsWith('logs/')));
   assert.ok(original.some(file => file.relativePath.startsWith('results/')));
   const savedResult = JSON.parse(await readFile(join(first.runRoot, 'results', '결과.json'), 'utf8'));
-  assert.equal(savedResult.runId, first.runId);
-  assert.equal(savedResult.finalized, true);
-  assert.equal(savedResult.verdict, 'passed');
+  assert.equal(savedResult.recordKind, 'uncommitted-result-observation');
+  assert.equal(savedResult.commitVerified, false);
+  assert.equal(savedResult.authoritativeResult, 'service-database-query');
+  assert.equal(savedResult.candidateResult.runId, first.runId);
+  assert.equal(savedResult.candidateResult.finalized, true);
+  assert.equal(savedResult.candidateResult.verdict, 'passed');
+  assert.equal('finalized' in savedResult, false);
+  assert.equal('verdict' in savedResult, false);
   assert.ok(original.some(file => file.relativePath === 'artifacts/관측.txt'));
   assert.ok(original.some(file => file.relativePath === 'artifacts/캡처자료.bin'));
   report.stages.push({ name: '기본 위치 실행과 출력 구획', passed: true, runId: first.runId, files: original });
