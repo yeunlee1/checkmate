@@ -1,7 +1,7 @@
 // Squirrel 이벤트와 고정 CLI 진입점의 파일 경계를 검증한다.
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
@@ -30,7 +30,7 @@ afterEach(async () => {
 });
 
 async function fixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'CheckMate 설치 시험 '));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'CheckMate 설치 시험 ')));
   temporary.push(root);
   return root;
 }

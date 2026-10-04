@@ -1,6 +1,6 @@
 // 관리형 stdio 브리지의 세대 전환과 이전 자격 보호 및 변경 요청 재전송 금지를 검증한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -65,7 +65,7 @@ beforeEach(() => {
 afterEach(async () => { for (const path of temporary.splice(0)) await rm(path, { recursive: true, force: true }); });
 const request = (method: ApiRequest['method'], input: ApiRequest['input'] = {}): ApiRequest => ({ apiVersion: 1, requestId: randomUUID(), method, input });
 async function fixture() {
-  const base = await mkdtemp(join(tmpdir(), 'CheckMate 관리형 브리지 ')); temporary.push(base);
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'CheckMate 관리형 브리지 '))); temporary.push(base);
   const installation = join(base, '설치 경로'), root = join(base, '자료 루트 A');
   await mkdir(join(managedDirectory(installation), '자료'), { recursive: true });
   await writeFile(join(installation, 'Update.exe'), '합성 설치 파일');
