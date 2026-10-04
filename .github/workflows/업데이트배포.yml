@@ -14,6 +14,7 @@ on:
       - 'scripts/개발설치본.mjs'
       - 'scripts/자동업데이트검증.mjs'
       - 'scripts/관리형연결검증.mjs'
+      - 'scripts/업데이트메타요청검증.cjs'
       - 'scripts/프로젝트자료폴더화면검증.mjs'
       - 'scripts/프로젝트자료폴더통합검증.mjs'
       - 'packages/**'
@@ -56,6 +57,17 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: npx playwright install chromium
       - run: npm test
+      - name: 실제 Electron 업데이트 목록 요청 검증
+        run: node scripts/업데이트메타요청검증.cjs
+      - name: 업데이트 목록 요청 검증 근거 보관
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: update-metadata-acceptance
+          include-hidden-files: true
+          path: .runtime/검증/업데이트메타요청/*/검증결과.json
+          if-no-files-found: ignore
+          retention-days: 14
       - run: npm run desktop:test
       - run: node scripts/프로젝트자료폴더화면검증.mjs
       - run: node scripts/프로젝트자료폴더통합검증.mjs

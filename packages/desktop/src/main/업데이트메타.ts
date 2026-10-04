@@ -1,5 +1,6 @@
 // 공식 업데이트 목록을 제한된 HTTPS 요청으로 읽고 리디렉션과 응답 무결성을 확인한다.
 import type { ClientRequest, ClientRequestConstructorOptions } from 'electron';
+import type { EventEmitter } from 'node:events';
 import { TextDecoder } from 'node:util';
 
 const metadataUrl = 'https://github.com/yeunlee1/checkmate/releases/latest/download/RELEASES';
@@ -33,16 +34,19 @@ export function readUpdateMetadata(requestFactory: (options: ClientRequestConstr
       });
       request.on('error', fail);
       request.on('abort', fail);
-      request.on('close', fail);
+      // 요청 Writable의 close는 응답 완료와 별개이며 전체 제한 안에서 응답을 기다린다.
       request.on('login', (_auth, callback) => { callback(); fail(); });
       request.on('response', response => {
         response.on('error', fail);
         response.on('aborted', fail);
+        // Electron 선언에 없는 Readable close만 기반 EventEmitter 계약으로 구독한다.
+        (response as EventEmitter).on('close', fail);
         response.on('end', () => {
           if (settled) return;
           try {
             if (bytes === 0) return fail();
             const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(Buffer.concat(chunks, bytes));
+            if (!source) return fail();
             settled = true; clearTimeout(timer); resolve(source);
           } catch { fail(); }
         });
