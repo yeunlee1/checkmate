@@ -1,5 +1,6 @@
 // 프로젝트 등록과 승인된 실행 및 결과 조회를 모든 입구에 공통으로 제공한다.
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { engineVersion } from '../버전.js';
 import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
@@ -463,10 +464,24 @@ export class ProductService {
         this.db.prepare('INSERT INTO gaps (id,project_id,requirement_id,opened_run_id,resolved_run_id,kind,state,detail_json) VALUES (?,?,?,?,NULL,?,?,?)')
           .run(randomUUID(), run.projectId, gap.requirementId, run.runId, gap.kind, 'open', JSON.stringify(gap));
       }
-      if (trusted) for (const gap of open) {
+      const resolvable = trusted && run.verdict === 'passed' ? this.db.prepare("SELECT g.id,g.requirement_id,g.kind,g.detail_json,p.id AS planId FROM gaps g JOIN runs r ON r.id=g.opened_run_id JOIN plans p ON p.id=r.plan_id WHERE g.project_id=? AND g.state='open' AND r.workspace_id=?")
+        .all(run.projectId, plan.workspace.id) as { id: string; requirement_id: string | null; kind: string; detail_json: string; planId: string }[] : [];
+      for (const gap of resolvable) {
+        const openedPlan = this.runs.getPlan(gap.planId);
+        if (!openedPlan) throw new ServiceError('plan-stale');
+        const openedSource = projectSourceSchema.parse(openedPlan.catalog.source);
+        const requirement = source.requirements.find(item => item.id === gap.requirement_id);
+        if (!requirement || !isDeepStrictEqual(requirement, openedSource.requirements.find(item => item.id === gap.requirement_id))) continue;
         const { testId } = JSON.parse(gap.detail_json) as { testId?: string | null };
         const related = testId ? source.checks.filter(check => check.id === testId && check.requirementId === gap.requirement_id)
           : source.checks.filter(check => check.requirementId === gap.requirement_id && check.required);
+        if (testId) {
+          const check = related[0];
+          const openedCheck = openedSource.checks.find(item => item.id === testId && item.requirementId === gap.requirement_id);
+          if (!check || !openedCheck || !isDeepStrictEqual(check, openedCheck)
+            || !isDeepStrictEqual(source.project.commands.find(item => item.id === check.commandId),
+              openedSource.project.commands.find(item => item.id === openedCheck.commandId))) continue;
+        } else if (gap.kind !== 'missing-test') continue;
         if (related.length === 0 || !related.every(check => run.plannedChecks.includes(check.id)
           && run.cases.some(item => item.testId === check.id && item.status === 'passed'))) continue;
         this.db.prepare("UPDATE gaps SET state='resolved',resolved_run_id=? WHERE id=? AND state='open'").run(run.runId, gap.id);

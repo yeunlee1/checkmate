@@ -1,16 +1,14 @@
 // 실제 작업 프로세스의 명령 전환과 취소 및 잘못된 IPC가 진행 조회에 반영되는지 확인한다.
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
-import type { PlanRegistration } from '@checkmate/contracts/runs';
-import { readProjectSource } from '../packages/engine/src/프로젝트/원본읽기.js';
+import type { ApiRequest } from '@checkmate/contracts/api';
 import { createProjectExecutor } from '../packages/engine/src/서비스/검사실행기.js';
 import { RunService } from '../packages/engine/src/서비스/실행서비스.js';
 import { ProductService } from '../packages/engine/src/서비스/제품서비스.js';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
-import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { EvidenceStore } from '../packages/engine/src/저장/증거저장.js';
 import { EventStore } from '../packages/engine/src/저장/이벤트저장.js';
 import { createStoreFixture } from './저장시험자료.js';
@@ -32,6 +30,7 @@ const closes: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of closes.splice(0)) await close(); ipc.wrongStart = false; });
 
 const commandScript = String.raw`
+// 소유 합성 명령의 시작과 해제 신호를 기록한다.
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -68,27 +67,30 @@ async function setup(secondTitle = '2번째 명령') {
   await writeFile(join(root, 'checkmate', '요구사항.json'), JSON.stringify(source.requirements));
   await writeFile(join(root, 'checkmate', '검사항목.json'), JSON.stringify(source.checks));
   await writeFile(join(root, 'tests', 'run.mjs'), commandScript);
-  const snapshot = await readProjectSource(root);
-  const plan: PlanRegistration = {
-    project: { id: projectId, name: '진행 시험', repositoryIdentity: 'synthetic:progress' },
-    workspace: { id: randomUUID(), realPath: snapshot.realPath,
-      pathFingerprint: createHash('sha256').update(snapshot.realPath).digest('hex') },
-    catalog: { id: randomUUID(), contentHash: snapshot.contentHash, source: JSON.parse(JSON.stringify(snapshot.source)) },
-    plan: { id: randomUUID(), fingerprint: createHash('sha256').update('progress').digest('hex'),
-      sourceHash: snapshot.sourceHash, profile: 'quick', plannedChecks: ['check-1', 'check-2'],
-      requiredChecks: ['check-1', 'check-2'] },
-    createdAt: new Date().toISOString(),
-  };
   const db = connectStore(files.dbPath);
-  closes.push(async () => { db.close(); await files.cleanup(); });
-  const store = new SQLiteRunStore(db);
-  store.registerPlan(plan);
   const evidenceStore = new EvidenceStore(db, runsRoot);
   const product = new ProductService(db, evidenceStore,
     createProjectExecutor({ runsRoot, evidenceStore, eventStore: new EventStore(db) }));
   const service = product.execution;
-  const started = service.start({ projectId, planId: plan.plan.id, requestId: randomUUID() });
-  return { service, product, store, plan, runId: started.runId, gate };
+  let runId: string | undefined;
+  closes.push(async () => {
+    if (runId && !product.runs.getRun(runId)?.finalized) await service.cancel(runId);
+    if (runId) await service.wait(runId);
+    await until(() => !product.active);
+    db.close(); await files.cleanup();
+  });
+  const call = (method: 'register' | 'inspect' | 'approve' | 'start', input: ApiRequest['input']) =>
+    product.handle({ apiVersion: 1, requestId: randomUUID(), method, input }, 'human');
+  expect(await call('register', { path: root })).toMatchObject({ ok: true });
+  const inspected = await call('inspect', { projectId, profile: 'quick' });
+  if (!inspected.ok) throw new Error(`계획 조회 실패: ${inspected.error.code}`);
+  const review = inspected.data as { planId: string; fingerprint: string };
+  expect(await call('approve', { planId: review.planId, fingerprint: review.fingerprint })).toMatchObject({ ok: true });
+  const started = await call('start', { projectId, planId: review.planId });
+  if (!started.ok) throw new Error(`실행 접수 실패: ${started.error.code}`);
+  runId = (started.data as { runId: string }).runId;
+  const plan = product.runs.getPlan(review.planId)!;
+  return { service, product, store: product.runs, plan, runId, gate };
 }
 
 async function until(check: () => boolean): Promise<void> {
