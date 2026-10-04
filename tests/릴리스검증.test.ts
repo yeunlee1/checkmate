@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
+import { UpdateController } from '../packages/desktop/src/main/업데이트.js';
 
 const validator = await import(pathToFileURL(resolve('scripts/릴리스검증.mjs')).href);
 const publisher = await import(pathToFileURL(resolve('scripts/릴리스게시.mjs')).href);
@@ -39,6 +40,26 @@ it('워크스페이스 버전 불일치와 태그의 사전 배포·잘못된 �
   expect(() => validator.releaseVersion([{ version: '1.2.3' }, { version: '1.2.4' }], 'v1.2.3')).toThrow();
   for (const tag of ['v1.2.3-beta.1', 'v1.2.4', 'v01.2.3', 'other']) expect(() => validator.releaseVersion([{ version: '1.2.3' }], tag)).toThrow();
 });
+it('Squirrel 목록은 선두 BOM만 제거하여 기존 앱의 엄격한 파서와 호환한다', async () => {
+  const folder = await mkdtemp(join(tmpdir(), '체크메이트 목록 ')); folders.push(folder);
+  const path = join(folder, 'RELEASES');
+  // 공개 0.2.1 Squirrel 목록의 실제 내용과 선두 EF BB BF를 재현한다.
+  const line = 'B128B210AAD3FF811103285C0FE92040431D9CB4 CheckMate-0.2.1-full.nupkg 214432483';
+  const body = Buffer.from(line);
+  await writeFile(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), body]));
+  await validator.normalizeReleaseFeed(path);
+  expect(await readFile(path)).toEqual(body);
+  const legacyDecoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await readFile(path));
+  const updater = { on() {}, setFeedURL() { throw new Error('다운로드 금지'); }, checkForUpdates() { throw new Error('다운로드 금지'); }, quitAndInstall() { throw new Error('설치 금지'); } };
+  const controller = new UpdateController(updater, folder, '0.2.0', async () => legacyDecoded);
+  expect(await controller.check()).toMatchObject({ state: 'available', availableVersion: '0.2.1', downloaded: false });
+  await validator.normalizeReleaseFeed(path);
+  expect(await readFile(path)).toEqual(body);
+  const unusual = Buffer.from(` ${line}\n\uFEFF`);
+  await writeFile(path, unusual);
+  await validator.normalizeReleaseFeed(path);
+  expect(await readFile(path)).toEqual(unusual);
+});
 it('내부 패키지 의존성이 이전 버전에 남으면 제작 전에 거절한다', () => {
   expect(() => validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0-alpha.1' } }])).toThrow('의존성');
   expect(validator.releaseVersion([{ version: '0.1.0', dependencies: { '@checkmate/contracts': '0.1.0', react: '19.3.0' } }])).toBe('0.1.0');
@@ -57,6 +78,13 @@ it('실제 바이트와 RELEASES 및 제작 지문이 맞아야 배포 목록을
   await writeFile(join(folder, 'RELEASES'), `${createHash('sha1').update(content).digest('hex')} ${packageName} ${content.length}\n`);
   const artifacts = await Promise.all([packageName, 'CheckMate-개발설치.exe', 'RELEASES'].map(async file => ({ path: join(folder, file), sha256: createHash('sha256').update(await readFile(join(folder, file))).digest('hex') })));
   const report = { status: 'passed', version: '1.2.3', source: { commit: 'fixed', dirtyAtStart: false, dirtyAtEnd: false }, artifacts };
+  expect((await validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3' })).folder).toBe(folder);
+  const feedPath = join(folder, 'RELEASES');
+  const feed = await readFile(feedPath);
+  await writeFile(feedPath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), feed]));
+  const bomArtifacts = await Promise.all(artifacts.map(async item => ({ ...item, sha256: createHash('sha256').update(await readFile(item.path)).digest('hex') })));
+  await expect(validator.verifyArtifacts({ ...report, artifacts: bomArtifacts }, { commit: 'fixed', version: '1.2.3' })).rejects.toThrow('BOM');
+  await validator.normalizeReleaseFeed(feedPath);
   expect((await validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3' })).folder).toBe(folder);
   await expect(validator.verifyArtifacts(report, { commit: 'fixed', version: '1.2.3', requireSigned: true })).rejects.toThrow('서명');
   await expect(validator.verifyArtifacts({ ...report, source: { ...report.source, dirtyAtEnd: true } }, { commit: 'fixed', version: '1.2.3' })).rejects.toThrow();

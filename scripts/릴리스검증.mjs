@@ -18,6 +18,10 @@ export function releaseVersion(manifests, tag) {
 export function requiresSignature(refType, allowUnsigned) {
   return refType === 'tag' && allowUnsigned !== 'true';
 }
+export async function normalizeReleaseFeed(path) {
+  const bytes = await readFile(path);
+  if (bytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) await writeFile(path, bytes.subarray(3));
+}
 const git = args => execFileSync('git', args, { encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 async function digest(file, algorithm) {
   const hash = createHash(algorithm); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest('hex');
@@ -51,7 +55,9 @@ export async function verifyArtifacts(report, identity) {
     if (dirname(resolve(item.path)) !== folder || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size <= 0 || await digest(item.path, 'sha256') !== item.sha256) throw new Error('산출물 지문이나 경로가 다릅니다.');
     lines.push(`${item.sha256}  ${basename(item.path)}`);
   }
-  const feed = (await readFile(release.path, 'utf8')).trim().split(/\r?\n/);
+  const metadata = await readFile(release.path, 'utf8');
+  if (metadata.startsWith('\uFEFF')) throw new Error('기존 앱 호환을 위해 RELEASES의 선두 BOM을 제작 단계에서 제거해야 합니다.');
+  const feed = metadata.trim().split(/\r?\n/);
   if (feed.length !== 1) throw new Error('전체 패키지 하나의 업데이트 목록이 필요합니다.');
   const match = feed[0].match(/^([a-f0-9]{40})\s+([^\s/\\]+)\s+(\d+)$/i);
   if (!match || match[2] !== basename(packageFile.path) || match[1].toLowerCase() !== await digest(packageFile.path, 'sha1') || Number(match[3]) !== (await lstat(packageFile.path)).size) throw new Error('RELEASES 지문·파일명·크기가 다릅니다.');

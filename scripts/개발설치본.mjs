@@ -9,6 +9,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import forge from '@electron-forge/core';
 import { build } from 'esbuild';
+import { normalizeReleaseFeed } from './릴리스검증.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const version = '24.18.0';
@@ -207,6 +208,9 @@ async function main() {
     const packagePath = join(runRoot, 'forge', 'CheckMate-win32-x64');
     const artifacts = made.flatMap(result => result.artifacts.map(path => join(runRoot, relative(asciiAlias, path))));
     if (!artifacts.some(path => basename(path) === 'CheckMate-개발설치.exe')) throw new Error('예상한 개발 설치 파일이 생성되지 않았습니다.');
+    const releaseFeed = artifacts.find(path => basename(path) === 'RELEASES');
+    if (!releaseFeed) throw new Error('업데이트 목록이 생성되지 않았습니다.');
+    await normalizeReleaseFeed(releaseFeed);
     report.packagePath = packagePath;
     report.version = desktopPackage.version;
     report.artifacts = [];

@@ -352,6 +352,38 @@ function metadataRequest() {
   };
   return { request, factory, result, respond };
 }
+const publishedReleases = '\ufeffB128B210AAD3FF811103285C0FE92040431D9CB4 CheckMate-0.2.1-full.nupkg 214432483';
+const publishedBytes = Buffer.from(publishedReleases, 'utf8');
+it.each([
+  ['선두 BOM', [publishedBytes]],
+  ['BOM 없음', [publishedBytes.subarray(3)]],
+  ['BOM 첫 바이트 분할', [publishedBytes.subarray(0, 1), publishedBytes.subarray(1, 2), publishedBytes.subarray(2)]],
+  ['BOM 두 바이트 분할', [publishedBytes.subarray(0, 2), publishedBytes.subarray(2)]],
+] as const)('공개 0.2.1 RELEASES의 %s을 메타 조회로만 수용한다', async (_label, chunks) => {
+  const { request, result, respond } = metadataRequest(); const native = new FakeUpdater();
+  const idle = vi.fn(async () => false); const lock = vi.fn(async () => async () => {});
+  const controller = new UpdateController(native, 'C:/합성설치', '0.2.0', () => result, idle, lock);
+  const recover = vi.spyOn(controller, 'recover'); respond([...chunks]);
+  expect(await controller.check()).toMatchObject({ state: 'available', reason: 'update-available', availableVersion: '0.2.1', release: null, downloaded: false });
+  await expect(result).resolves.toBe(publishedReleases.slice(1)); expect(request.abort).not.toHaveBeenCalled();
+  expect(idle).not.toHaveBeenCalled(); expect(lock).not.toHaveBeenCalled(); expect(recover).not.toHaveBeenCalled();
+  expect(native.setFeedURL).not.toHaveBeenCalled(); expect(native.checkForUpdates).not.toHaveBeenCalled(); expect(native.quitAndInstall).not.toHaveBeenCalled();
+});
+it.each([
+  ['중복 BOM', '\ufeff' + publishedReleases],
+  ['내부 BOM', publishedReleases.replace(' CheckMate', ' \ufeffCheckMate')],
+  ['추가행', publishedReleases + '\n' + metadata('0.2.1')],
+  ['추가 빈행', publishedReleases + '\n\n'],
+  ['선두 공백', publishedReleases.replace('\ufeff', '\ufeff ')],
+  ['끝 공백', publishedReleases + ' '],
+  ['끝 탭', publishedReleases + '\t'],
+] as const)('선두 BOM 처리 뒤에도 RELEASES의 %s은 거절한다', async (_label, source) => {
+  const { result, respond } = metadataRequest(); const native = new FakeUpdater();
+  const controller = new UpdateController(native, 'C:/합성설치', '0.2.0', () => result);
+  respond([Buffer.from(source)]);
+  expect(await controller.check()).toMatchObject({ state: 'error', reason: 'check-unavailable', availableVersion: null, downloaded: false });
+  expect(native.checkForUpdates).not.toHaveBeenCalled();
+});
 it('공식 RELEASES만 자격 없이 수동 리디렉션으로 요청하고 UTF8 원문을 돌려준다', async () => {
   const { request, factory, result, respond } = metadataRequest(); const source = metadata();
   expect(factory).toHaveBeenCalledWith({ url: `${updateFeed}/RELEASES`, method: 'GET', redirect: 'manual', credentials: 'omit', useSessionCookies: false });
