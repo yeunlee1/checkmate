@@ -94,7 +94,7 @@ else {
   ipcMain.handle('checkmate:choose-directory', async (event, purpose?: string, language?: unknown) => {
     checkSender(event);
     const t = dialogText(language);
-    const title = purpose === 'backup' ? t('완성된 백업 폴더 선택', 'Choose a completed backup') : purpose === 'restore' ? t('복구할 새 빈 자료 폴더 선택', 'Choose an empty folder for recovery') : t('검사할 프로젝트 폴더 선택', 'Choose a project to test');
+    const title = purpose === 'backup' ? t('완성된 백업 폴더 선택', 'Choose a completed backup') : purpose === 'restore' ? t('복구할 새 빈 자료 폴더 선택', 'Choose an empty folder for recovery') : purpose === 'project-storage' ? t('프로젝트 검사 자료를 저장할 폴더 선택', 'Choose a folder for project check materials') : t('검사할 프로젝트 폴더 선택', 'Choose a project to test');
     const result = await dialog.showOpenDialog(window!, { title, buttonLabel: t('폴더 선택', 'Choose folder'), properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });

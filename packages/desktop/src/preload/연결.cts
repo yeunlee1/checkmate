@@ -8,7 +8,7 @@ function language(): 'ko' | 'en' {
 
 contextBridge.exposeInMainWorld('checkmate', {
   request: (method: string, input: Record<string, unknown>, requestId?: string) => ipcRenderer.invoke('checkmate:request', { apiVersion: 1, requestId: requestId ?? globalThis.crypto.randomUUID(), method, input }),
-  chooseDirectory: (purpose?: string) => ipcRenderer.invoke('checkmate:choose-directory', purpose, language()),
+  chooseDirectory: (purpose?: 'backup' | 'restore' | 'project-storage') => ipcRenderer.invoke('checkmate:choose-directory', purpose, language()),
   chooseReport: () => ipcRenderer.invoke('checkmate:choose-report', language()),
   initializeLocalStore: () => ipcRenderer.invoke('checkmate:initialize'),
   exportReport: (runId: string) => ipcRenderer.invoke('checkmate:export', runId, language()),

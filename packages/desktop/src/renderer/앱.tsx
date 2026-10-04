@@ -1,19 +1,20 @@
 // 프로젝트 등록부터 실행 결과와 증거 조회까지 사람의 확인 흐름을 제공한다.
 import { useEffect, useRef, useState } from 'react';
 import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
-import type { RunProgress } from '@checkmate/contracts/runs';
+import type { OutputStorageSnapshot, RunProgress } from '@checkmate/contracts/runs';
 import { VisualEvidence, parseDesignEvidence } from './증거시각화.js';
 import type { DesignEvidence, VisualEvidenceProps } from './증거시각화.js';
 import { Help } from './도움말.js';
 import { TestResources } from './시험자원.js';
 import { UpdateSettings } from './업데이트설정.js';
+import { ProjectStorageFolder } from './프로젝트자료폴더.js';
 import type { UpdateState } from '../main/업데이트.js';
 import { useLanguage, text } from './언어.js';
 
 type Bridge = {
   update(action: 'status' | 'check' | 'apply'): Promise<UpdateState>;
   request(method: ApiMethod, input: Record<string, unknown>, requestId?: string): Promise<ApiResponse>;
-  chooseDirectory(purpose?: 'backup' | 'restore'): Promise<string | null>;
+  chooseDirectory(purpose?: 'backup' | 'restore' | 'project-storage'): Promise<string | null>;
   chooseReport(): Promise<string | null>;
   connectionInfo(): Promise<{ version: string; dataPath: string; mcpCommand: { command: string; args: string[] } }>;
   initializeLocalStore(): Promise<void>;
@@ -30,7 +31,8 @@ type CheckInfo = { id: string; title: string; requirementId: string; required: b
 type Command = { id: string; title: string; runtime: string; entry: string; args: string[]; timeoutMs: number;
   env: Record<string, string>; writes: string[]; resultFormat: string; resources?: string[]; exclusiveResources?: string[] };
 type PlanReview = { planId: string; projectId: string; workspaceId?: string; profile: string; fingerprint: string; sourceHash: string;
-  checks: { id: string; title: string; required: boolean }[]; commands: Command[]; writes: string[]; resourceEffects: string[]; needsApproval: boolean };
+  checks: { id: string; title: string; required: boolean }[]; commands: Command[]; writes: string[]; resourceEffects: string[]; needsApproval: boolean;
+  outputStorage?: OutputStorageSnapshot };
 type CatalogChange = { projectId: string; workspaceId: string; contentHash: string; active: boolean; added: string[]; removed: string[];
   changed: string[]; weakened: string[] };
 type CaseInfo = { testId: string; status: string; requirementId: string | null; expected: string | null;
@@ -274,6 +276,7 @@ export function App() {
   const [needsInitialization, setNeedsInitialization] = useState(false);
   const [serviceReady, setServiceReady] = useState(false);
   const [capabilities, setCapabilities] = useState<unknown>(null);
+  const [connectionGeneration, setConnectionGeneration] = useState(0);
   const capabilitiesRef = useRef<unknown>(null);
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(true);
@@ -283,7 +286,24 @@ export function App() {
   const selectedProjectRef = useRef('');
   const selectedRunRef = useRef('');
   const busyRef = useRef(false);
+  const storageApplyingRef = useRef(false);
   const project = projects.find((item) => item.workspaceId === workspaceId) ?? null;
+  const storageCapabilities = capabilities as { capabilities?: string[]; connection?: { dataRoot?: string } | null } | null;
+  const storageSupported = Array.isArray(storageCapabilities?.capabilities) && storageCapabilities.capabilities.includes('project-storage');
+  const storageConnectionKey = JSON.stringify([connection?.dataPath ?? null, storageCapabilities?.connection?.dataRoot ?? null]);
+  function acquireStorage() {
+    if (busyRef.current) return false;
+    busyRef.current = true; storageApplyingRef.current = true; setBusy('project-storage-apply');
+    setPlan(null); setConsent(false); startRequestId.current = null;
+    return true;
+  }
+  function releaseStorage() { storageApplyingRef.current = false; busyRef.current = false; setBusy(''); }
+  function storageApplied(id: string, connectionKey: string) {
+    if (id !== projectId || connectionKey !== storageConnectionKey) return;
+    setPlan(null); setConsent(false); startRequestId.current = null;
+    setNotice('자료 이전을 완료하고 원본을 보존했습니다. 새 계획을 확인하고 다시 승인해 주세요.',
+      'Materials migrated and originals preserved. Review and approve a new plan.');
+  }
   function setNotice(korean: string, english = korean) { setNoticeError(null); setNoticeValue(korean ? [korean, english] : null); }
   function showError(error: unknown) { setNoticeValue(null); setNoticeError(error); }
   const selectionPage = { items: projects, nextCursor: projectCursor, total: projectTotal };
@@ -291,6 +311,7 @@ export function App() {
   const matchesProject = (result: { projectId: string; workspaceId?: string }, id: string, workspace: string) =>
     guiWorkspaceMatches(capabilitiesRef.current, selectionPage, id, workspace, result);
   async function readCapabilities() {
+    setConnectionGeneration(value => value + 1);
     capabilitiesRef.current = null; setCapabilities(null); setServiceReady(false);
     setPlan(null); setConsent(false); setSummary(null); setProgress(null); setHandoffConsent(false);
     const value = await request<unknown>('capabilities');
@@ -399,6 +420,7 @@ export function App() {
   }, [connected, serviceReady, page, runId, projectId, workspaceId, capabilities, projects, projectCursor, projectTotal]);
 
   function selectProject(id: string, registered?: ProjectInfo) {
+    if (storageApplyingRef.current) return;
     const selected = registered ?? projects.find(item => item.workspaceId === id);
     const selectedId = selected?.id ?? '';
     selectedProjectRef.current = id;
@@ -695,6 +717,10 @@ export function App() {
                  <div className="metrics"><div><strong>{plan.checks.length}</strong><span>{text('선택 검사', 'Selected checks')}</span></div><div><strong>{plan.checks.filter((item) => item.required).length}</strong><span>{text('필수 검사', 'Required checks')}</span></div><div><strong>{plan.commands.length}</strong><span>{text('실행 명령', 'Commands')}</span></div></div>
                  <div className="subsection"><h4>{text('선택한 검사', 'Selected checks')}</h4><ul className="compact-list">{plan.checks.map((item) => <li key={item.id}><span><strong>{item.title}</strong>{checks.find((check) => check.id === item.id)?.expected && <small className="check-purpose">{text('확인 기준', 'Expected result')} · {checks.find((check) => check.id === item.id)?.expected}</small>}<details className="technical-detail"><summary>{text('검사 ID', 'Check ID')}</summary><code>{item.id}</code></details></span>{item.required && <span className="small-tag">{text('필수', 'Required')}</span>}</li>)}</ul></div>
                  <div className="approval-scope"><h4>{text('승인할 실행 범위', 'Execution scope to approve')}</h4><p>{text('명령, 환경 값, 파일 쓰기, 시험 자원을 확인한 뒤 체크하세요.', 'Review commands, environment values, file writes, and test resources before checking the box.')}</p>
+                   {plan.outputStorage && <div className="subsection"><h4>{text('계획의 출력 저장 위치', 'Plan output storage')}</h4><dl className="detail-grid storage-details">
+                     <div><dt>{text('실행 자료 폴더', 'Runs folder')}</dt><dd className="path-line" data-testid="plan-storage-root">{plan.outputStorage.runsRoot}</dd></div>
+                     <div><dt>{text('이름 공간', 'Namespace')}</dt><dd className="path-line">{plan.outputStorage.namespaceId ?? text('기본 저장 위치', 'Default storage location')}</dd></div>
+                     <div><dt>{text('개정', 'Revision')}</dt><dd>{plan.outputStorage.revision}</dd></div></dl></div>}
                    <div className="subsection"><h4>{text('실행 명령과 환경', 'Commands and environment')}</h4>{plan.commands.map((command) => <div className="command-card" key={command.id}><strong>{command.title}</strong>
                    <details className="technical-detail" open={plan.needsApproval}><summary>{text('정확한 명령과 환경 값 보기', 'Show exact command and environment')}</summary><p><code>{command.runtime} {command.entry} {command.args.join(' ')}</code></p><p className="muted">{text('시간 제한', 'Timeout')} {Math.round(command.timeoutMs / 1000)}{text('초', 's')} · {text('결과 형식', 'Result format')} {command.resultFormat}</p>
                    {command.exclusiveResources?.length ? <p>{text('공유 자원 잠금', 'Shared resource locks')} <code>{command.exclusiveResources.join(', ')}</code></p> : null}
@@ -893,6 +919,11 @@ export function App() {
             </div>
           </section>}
         </>}
+        <div hidden={loading || !serviceReady || page !== 'settings'} className="project-storage-container">
+          <ProjectStorageFolder projectId={projectId} projectName={project?.name ?? ''} connectionKey={storageConnectionKey}
+            generation={connectionGeneration} supported={storageSupported} available={serviceReady} disabled={!!busy}
+            acquire={acquireStorage} release={releaseStorage} onApplied={storageApplied} />
+        </div>
       </div>
     </main>
   </div>;
