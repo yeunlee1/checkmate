@@ -26,7 +26,13 @@ let release;
 const pause = ms => new Promise(done => setTimeout(done, ms));
 async function waitFor(predicate, timeout = 90000) {
   const deadline = Date.now() + timeout;
-  while (!await predicate()) { if (Date.now() >= deadline) throw new Error('격리 연결 대기 시간 초과'); await pause(300); }
+  while (Date.now() < deadline) {
+    const ready = await predicate(deadline - Date.now());
+    if (Date.now() >= deadline) break;
+    if (ready) return;
+    await pause(Math.min(300, deadline - Date.now()));
+  }
+  throw new Error('격리 연결 대기 시간 초과');
 }
 const locations = version => ({ node: join(install, `app-${version}`, 'resources/node/node.exe'),
   cli: join(install, `app-${version}`, 'resources/engine/packages/engine/dist/명령.js') });
@@ -86,7 +92,16 @@ try {
   assert.equal(report.before.ok, true); assert.equal(report.before.data.cleanupVerified, true);
   release = await acquireUpdateLock(install);
   for (const entry of clients) assert.equal((await tool(entry.client, 'get_capabilities')).error.code, 'update-in-progress');
-  assert.equal(await waitForManagedIdle(install), true); report.phases.push('all-roots-drained-with-pipes-alive');
+  let drained = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { drained = await waitForManagedIdle(install); break; }
+    catch (error) {
+      if (!String(error.stderr).includes('process-path-unknown') || attempt === 2) throw error;
+      report.readinessObservationDeferrals = (report.readinessObservationDeferrals ?? 0) + 1;
+      await pause(300);
+    }
+  }
+  assert.equal(drained, true); report.phases.push('all-roots-drained-with-pipes-alive');
   await release(); release = undefined;
   const next = locations('1.0.1');
   for (const dataRoot of dataRoots) await ensureManagedConnection(dataRoot, next.node, next.cli, '1.0.1');
@@ -111,8 +126,8 @@ finally {
   await release?.();
   for (const entry of clients.reverse()) await entry.client.close();
   try {
-    await waitFor(async () => {
-      try { return await installationIdle(install); }
+    await waitFor(async remaining => {
+      try { return await installationIdle(install, Math.min(15000, remaining)); }
       catch { report.cleanupObservationDeferrals = (report.cleanupObservationDeferrals ?? 0) + 1; return false; }
     }, 90000);
     report.cleanupVerified = true;
