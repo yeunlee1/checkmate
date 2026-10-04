@@ -412,19 +412,23 @@ it('정리 확인은 다른 run의 lease를 가리킨 손상 참조를 거절하
 
 
 
-it.each(['absent', 'wrong-state'] as const)('일반 cleanupVerified=true 실행과 %s 복구 근거는 사람 ack로 잠금을 해소하지 않는다.', async audit => {
+it.each(['absent', 'wrong-state', 'missing-output'] as const)('일반 cleanupVerified=true 실행에서 %s 근거는 사람 ack로 잠금을 해소하지 않는다.', async audit => {
   const f = await fixture();
   f.executor.mockImplementation(async (_plan, initial) => ({ ...initial, state: 'blocked', cleanupVerified: true }));
   const accepted = data<{ runId: string }>(await f.calls('start', { projectId: f.a.projectId, workspaceId: f.infoA.workspaceId, planId: f.planA.planId }));
   await f.product.execution.wait(accepted.runId);
   await vi.waitFor(() => expect(f.db.prepare('SELECT count(*) AS count FROM execution_locks').get()).toEqual({ count: 0 }));
-  const lease = f.product.locks.acquire(accepted.runId, null, 'a'.repeat(64), executionLockKeys(f.a.projectRoot, [])); f.product.locks.admit(lease);
+  const plan = f.product.runs.getPlan(f.planA.planId)!;
+  const lease = f.product.locks.acquire(accepted.runId, null, 'a'.repeat(64), executionLockKeys(f.a.projectRoot, [], [],
+    audit === 'missing-output' ? [] : [join(plan.plan.outputStorage!.runsRoot, accepted.runId)])); f.product.locks.admit(lease);
   f.db.prepare('INSERT INTO execution_locks (run_id,lease_json) VALUES (?,?)').run(accepted.runId, JSON.stringify(lease));
   if (audit === 'wrong-state') f.db.prepare("INSERT INTO audit_events (id,action,actor_kind,entity_id,before_hash,after_hash,approval_id,recorded_at,detail_json) VALUES (?,'run-recovery-blocked','service',?,NULL,NULL,NULL,?,?)").run(randomUUID(), accepted.runId, new Date().toISOString(), JSON.stringify({ previousState: 'running', reason: 'service-restarted' }));
   const file = join(f.product.locks.root, `${lease.runId}-${lease.generation}.json`), before = await readFile(file, 'utf8');
   const result = f.db.prepare('SELECT summary_json FROM runs WHERE id=?').get(accepted.runId);
-  expect(await f.calls('acknowledge-cleanup', { runId: accepted.runId, confirm: true, note: '합성 사람이 대상 실행을 확인한 시험이다.' })).toMatchObject({ ok: false, error: { code: 'invalid-state' } });
+  expect(await f.calls('acknowledge-cleanup', { runId: accepted.runId, confirm: true, note: '합성 사람이 대상 실행을 확인한 시험이다.' }))
+    .toMatchObject({ ok: false, error: { code: audit === 'missing-output' ? 'lock-ownership-unknown' : 'invalid-state' } });
   expect(await readFile(file, 'utf8')).toBe(before);
   expect(f.db.prepare('SELECT summary_json FROM runs WHERE id=?').get(accepted.runId)).toEqual(result);
+  expect(f.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(accepted.runId)).toEqual({ lease_json: JSON.stringify(lease) });
   expect(f.db.prepare("SELECT count(*) AS count FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged'").get(accepted.runId)).toEqual({ count: 0 });
 });

@@ -1,6 +1,6 @@
 // 합성 프로젝트와 가짜 PostgreSQL 자원으로 실행기 연결과 비밀 경계를 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -142,7 +142,9 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
     const admitted = service.start({ projectId, planId: plan.plan.id, requestId: randomUUID() });
     if (options.cancel) setTimeout(() => { void service.cancel(admitted.runId); }, 500);
     const result = await service.wait(admitted.runId);
-    return { result, events: events.list(admitted.runId), evidence: evidence.list(admitted.runId), prepare, cleanup, provider };
+    const files = evidence.list(admitted.runId);
+    const storedContents = await Promise.all(files.map(item => readFile(join(runsRoot, admitted.runId, item.relativePath))));
+    return { result, events: events.list(admitted.runId), evidence: files, storedContents, prepare, cleanup, provider };
   } finally { db.close(); await fixture.cleanup(); }
 }
 
@@ -218,8 +220,15 @@ describe('부모 소유 자원 실행 연결', () => {
     for (const mode of ['text', 'binary'] as const) {
       const leaked = await scenario(mode, { declared: true });
       expect(leaked.result.verdict).not.toBe('passed');
-      expect(leaked.evidence).toHaveLength(1);
-      expect(leaked.evidence[0]?.relativePath).toBe('명령-1.json');
+      expect(leaked.evidence.map(item => item.relativePath).sort()).toEqual([
+        'logs/명령-1-stderr.log', 'logs/명령-1-stdout.log', 'results/명령-1.json', 'results/실행관측.json',
+      ].sort());
+      expect(leaked.evidence.every(item => item.sensitivity === 'restricted')).toBe(true);
+      expect(leaked.evidence.some(item => item.relativePath.startsWith('artifacts/'))).toBe(false);
+      for (const content of leaked.storedContents) {
+        expect(content.includes(Buffer.from(secret))).toBe(false);
+        expect(content.includes(Buffer.from(url))).toBe(false);
+      }
     }
   });
 

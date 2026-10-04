@@ -11,6 +11,7 @@ import type { Admission, AdmissionResult, PlanRegistration, RunPage, RunStore } 
 import type { ControlOwner, RunControl, RunMetadata } from '@checkmate/contracts/runs';
 import { randomUUID } from 'node:crypto';
 import { ServiceError } from '@checkmate/contracts/api';
+import type { ProjectStorage } from './프로젝트자료.js';
 
 const uuid = z.uuid();
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -19,6 +20,7 @@ type Row = Record<string, unknown>;
 
 function failure(error: unknown): never {
   if (error instanceof RunStoreError) throw error;
+  if (error instanceof ServiceError && error.code === 'plan-stale') throw new RunStoreError('plan-stale');
   const code = error instanceof Error && 'code' in error ? String(error.code) : '';
   if (/^SQLITE_(BUSY|LOCKED)(_|$)/.test(code)) throw new RunStoreError('storage-busy');
   throw new RunStoreError('storage-error');
@@ -53,7 +55,7 @@ function same(actual: unknown, expected: unknown): void {
 }
 
 export class SQLiteRunStore implements RunStore {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database, private readonly storage?: ProjectStorage) {}
 
   registerPlan(input: PlanRegistration): void {
     const parsed = valid(planRegistrationSchema, input);
@@ -138,6 +140,7 @@ export class SQLiteRunStore implements RunStore {
           if (error instanceof ServiceError && ['needs-approval', 'agent-control-required'].includes(error.code)) guardRejection = error;
           throw error;
         }
+        this.storage?.assertPlan(registration);
         const base: RunResult = {
           schemaVersion: 1, runId: parsed.runId, projectId: parsed.projectId, profile: registration.plan.profile,
           origin: 'live', state: 'queued', verdict: null, planHash: registration.plan.fingerprint,
@@ -150,6 +153,10 @@ export class SQLiteRunStore implements RunStore {
         valid(runResultSchema, base);
         this.db.prepare(`INSERT INTO runs (id,workspace_id,plan_id,origin,state,verdict,phase,worker_exit_code,started_at,summary_json)
           VALUES (?,?,?,?,?,?,?,?,?,?)`).run(parsed.runId, plan.workspace_id, parsed.planId, 'live', 'queued', null, 'queued', null, startedAt, JSON.stringify(base));
+        if (registration.plan.outputStorage) {
+          if (!this.storage) throw new RunStoreError('storage-error');
+          this.storage.admit(registration, parsed.runId, startedAt);
+        }
         this.db.prepare('INSERT INTO requests (workspace_id,request_id,request_hash,run_id) VALUES (?,?,?,?)')
           .run(plan.workspace_id, parsed.requestId, parsed.requestHash, parsed.runId);
         if (parsed.owner) {
@@ -242,6 +249,7 @@ export class SQLiteRunStore implements RunStore {
         for (const item of final.cases) insertCase.run(final.runId, item.testId, item.requirementId, item.status, item.severity,
           item.expected === null ? null : JSON.stringify(item.expected), item.observed === null ? null : JSON.stringify(item.observed),
           item.location === null ? null : JSON.stringify(item.location));
+        this.storage?.saveResult(final);
         return final;
       })();
     } catch (error) { failure(error); }

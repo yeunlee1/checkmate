@@ -65,8 +65,8 @@ it('승인한 두 프로필의 실제 변이 실행을 통과와 실패로 확�
         expected: '모든 권한 함수 변이가 검출되고 생존 변이가 0개다.' });
       expect(cases.items[0].observed).toContain('점수');
       const files = evidenceStore.list(accepted.runId);
-      const normalized = files.find((item) => item.relativePath === `변이보고서-${profile}.json`);
-      const log = files.find((item) => item.relativePath === `Stryker-${profile}.txt`);
+      const normalized = files.find((item) => item.relativePath === `artifacts/변이보고서-${profile}.json`);
+      const log = files.find((item) => item.relativePath === `artifacts/Stryker-${profile}.txt`);
       expect(normalized?.sensitivity).toBe('public');
       expect(log?.sensitivity).toBe('restricted');
       expect(cases.items[0].evidenceIds).toContain(normalized?.id);

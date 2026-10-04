@@ -42,7 +42,7 @@ function realLocation(path: string): string {
     return join(realLocation(parent), path.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
   }
 }
-export function executionLockKeys(workspacePath: string, writes: string[], exclusiveResources: string[] = []): string[] {
+export function executionLockKeys(workspacePath: string, writes: string[], exclusiveResources: string[] = [], outputPaths: string[] = []): string[] {
   const root = realLocation(workspacePath);
   const keys = [`workspace:${root}`];
   for (const path of writes) {
@@ -51,6 +51,7 @@ export function executionLockKeys(workspacePath: string, writes: string[], exclu
     keys.push(`path:${actual}`);
   }
   for (const key of exclusiveResources) keys.push(`named:${key.trim().toLowerCase()}`);
+  for (const path of outputPaths) keys.push(`path:${realLocation(path)}`);
   return [...new Set(keys)].sort();
 }
 function conflicts(a: string, b: string): boolean {
