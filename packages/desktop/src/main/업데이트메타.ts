@@ -42,7 +42,7 @@ export function readUpdateMetadata(requestFactory: (options: ClientRequestConstr
           if (settled) return;
           try {
             if (bytes === 0) return fail();
-            const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks, bytes));
+            const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(Buffer.concat(chunks, bytes));
             settled = true; clearTimeout(timer); resolve(source);
           } catch { fail(); }
         });
