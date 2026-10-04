@@ -11,6 +11,8 @@ export const planRegistrationSchema = z.strictObject({
   plan: z.strictObject({
     id: z.uuid(), fingerprint: hash, sourceHash: hash, profile: identifier,
     plannedChecks: z.array(identifier).max(100000), requiredChecks: z.array(identifier).max(100000),
+    nativeResourceRoot: z.string().min(1).max(4096).refine(value => /^(?:[A-Za-z]:[\\/]|\/)/u.test(value)
+      && !/[\x00-\x1f\x7f]/u.test(value), '네이티브 자원의 절대 전용 폴더가 필요합니다.').optional(),
   }),
   createdAt: z.iso.datetime(),
 }).superRefine((value, context) => {
@@ -25,7 +27,12 @@ export const planRegistrationSchema = z.strictObject({
 export type PlanRegistration = z.infer<typeof planRegistrationSchema>;
 export type Admission = {
   projectId: string; planId: string; requestId: string; requestHash: string; runId: string; createdAt: string;
+  owner?: ControlOwner;
+  lease?: Record<string, unknown>;
 };
+export type ControlOwner = { ownerId: string; ownerHash: string; serviceEpoch: string };
+export type RunControl = ControlOwner & { revision: number };
+export type RunMetadata = { workspaceId: string; planId: string; ownerId: string | null; ownershipRevision: number | null };
 export type AdmissionResult = { runId: string; reused: boolean };
 export type RunPage = { runs: RunResult[]; nextCursor: string | null };
 export type RunProgress = {
@@ -40,7 +47,7 @@ export type RunProgress = {
   updatedAt: string | null;
 };
 export type RunStoreErrorCode = 'invalid-input' | 'project-not-found' | 'plan-stale' | 'request-conflict'
-  | 'workspace-busy' | 'storage-busy' | 'storage-error' | 'run-not-found' | 'invalid-state';
+  | 'workspace-busy' | 'storage-busy' | 'storage-error' | 'run-not-found' | 'invalid-state' | 'run-owner-mismatch';
 
 export class RunStoreError extends Error {
   constructor(readonly code: RunStoreErrorCode) {
@@ -52,7 +59,7 @@ export class RunStoreError extends Error {
 export interface RunStore {
   registerPlan(input: PlanRegistration): void;
   getPlan(planId: string): PlanRegistration | null;
-  admitRun(input: Admission): AdmissionResult;
+  admitRun(input: Admission, guard?: () => void): AdmissionResult;
   markRunning(runId: string): RunResult;
   finalizeRun(result: RunResult): RunResult;
   getRun(runId: string): RunResult | null;

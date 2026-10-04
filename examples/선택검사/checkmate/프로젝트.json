@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "a18ac31d-7a10-4b18-b29c-3a77349b2eab",
+  "name": "단일 선택 합성 예제",
+  "repositoryIdentity": "synthetic:checkmate-selected-expense",
+  "commands": [{ "id": "expense-one", "title": "합성 단일 선택 검사", "runtime": "node", "entry": "scripts/단일검사.mjs", "args": [], "timeoutMs": 15000, "env": {}, "writes": [], "resultFormat": "ndjson" }],
+  "profiles": [{ "id": "expense-one", "title": "합성 단일 선택", "checkIds": ["expense-annual-one"] }]
+}

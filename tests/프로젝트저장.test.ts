@@ -1,16 +1,34 @@
 // 합성 SQLite에서 프로젝트 카탈로그와 계획 및 승인 저장의 경계를 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { databaseResourceKinds, databaseResourceNames } from '@checkmate/contracts/resources';
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { afterEach, expect, test } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { databaseResourceKinds, databaseResourceNames, type NativePostgresProvider } from '@checkmate/contracts/resources';
+import { readFileSync, realpathSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { afterEach, expect, test, vi } from 'vitest';
 import type { ProjectSnapshot, ProjectSource } from '@checkmate/contracts/project';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { ProjectStore } from '../packages/engine/src/저장/프로젝트저장.js';
 import { createStoreFixture } from './저장시험자료.js';
 
+// 버전 조회만 소유 합성 파일의 정확한 경로와 인자로 제한하고 실제 바이너리는 실행하지 않는다.
+const syntheticVersions = vi.hoisted(() => new Map<string, string>());
+vi.mock('node:child_process', async importOriginal => ({
+  ...await importOriginal<typeof import('node:child_process')>(),
+  execFileSync: vi.fn((path: string, args: string[], options: { encoding?: string }) => {
+    const name = syntheticVersions.get(path);
+    if (!name || args.length !== 1 || args[0] !== '--version' || options.encoding !== 'utf8')
+      throw new Error('소유 합성 binary의 정확한 버전 조회만 허용합니다.');
+    return `${name} (PostgreSQL) 17.11\n`;
+  }),
+}));
+
 const cleanup: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
+  syntheticVersions.clear();
+  vi.clearAllMocks();
+});
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
 function canonical(value: unknown): string {
@@ -70,7 +88,11 @@ test('등록 재사용과 ID, 경로, 저장소 식별자 및 이름 충돌을 �
   expect(store.list()).toEqual([info]);
   const otherPath = join(files.directory, '다른경로');
   await mkdir(otherPath);
-  expect(() => store.register(snapshot(otherPath, source))).toThrowError(expect.objectContaining({ code: 'project-conflict' }));
+  const other = store.register(snapshot(otherPath, source));
+  expect(other.workspaceId).not.toBe(info.workspaceId);
+  expect(store.get(source.project.id, info.workspaceId)).toEqual(info);
+  expect(store.get(source.project.id, other.workspaceId)).toEqual(other);
+  expect(() => store.get(source.project.id)).toThrowError(expect.objectContaining({ code: 'workspace-required' }));
   expect(() => store.register(snapshot(otherPath, { ...source,
     project: { ...source.project, id: randomUUID() } })))
     .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
@@ -79,7 +101,7 @@ test('등록 재사용과 ID, 경로, 저장소 식별자 및 이름 충돌을 �
     .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
   expect(() => store.register(snapshot(files.directory, { ...source,
     project: { ...source.project, name: '무단 변경' } })))
-    .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
+    .toThrowError(expect.objectContaining({ code: 'catalog-stale' }));
   expect((db.prepare('SELECT count(*) AS count FROM projects').get() as { count: number }).count).toBe(1);
 });
 
@@ -188,4 +210,106 @@ test('등록 입력과 저장 JSON 손상을 거절하고 만료 또는 철회�
     { active_catalog_id: string }).active_catalog_id;
   db.prepare('UPDATE catalogs SET source_json = ? WHERE id = ?').run('{}', catalogId);
   expect(() => store.get(source.project.id)).toThrowError(expect.objectContaining({ code: 'storage-error' }));
+});
+
+async function registeredNativeProvider(directory: string): Promise<NativePostgresProvider> {
+  const path = join(directory, '합성binary');
+  await mkdir(path);
+  const binaryRoot = realpathSync.native(path);
+  // 고정 합성 바이트와 별도로 동결한 기대 SHA이며 실제 PostgreSQL 설치 자료를 읽지 않는다.
+  const sha256 = {
+    initdb: '1b8fea16f8d4aef39402fb52cee7a861e9bf1514e1a048666d85390c14cd13a1',
+    pg_ctl: '528208582942f204abbed3eb2e08c700520a7b1806d9a3af13fd0d51be677ca0',
+    postgres: 'a8301f2915d662512dc6e6d216c28561d9e1fa714d16ce4556c95c2f121d143a',
+  };
+  for (const name of ['initdb', 'pg_ctl', 'postgres'] as const) {
+    const file = join(binaryRoot, `${name}${process.platform === 'win32' ? '.exe' : ''}`);
+    await writeFile(file, `synthetic-checkmate-${name}-17.11\n`, { flag: 'wx' });
+    expect(createHash('sha256').update(readFileSync(file)).digest('hex')).toBe(sha256[name]);
+    syntheticVersions.set(file, name);
+  }
+  return { mode: 'native', binaryRoot, postgresVersion: '17.11', sha256 };
+}
+
+test('native 계획과 승인에는 등록 binary와 정확한 전용 root 및 생성 정리 효과가 고정된다', async () => {
+  const { db, source, files } = await fixture();
+  const resourceRoot = join(files.directory, '전용자원');
+  await mkdir(resourceRoot);
+  const root = realpathSync.native(resourceRoot);
+  const provider = await registeredNativeProvider(files.directory);
+  const store = new ProjectStore(db, root);
+  const native = { ...source, project: { ...source.project, commands: source.project.commands.map(command =>
+    ({ ...command, resources: ['postgres-test'] as ['postgres-test'], resourceProvider: provider })) } };
+  const input = snapshot(files.directory, native);
+  store.register(input);
+  const plan = store.inspect(input, 'quick');
+  expect(plan.nativeResourceRoot).toBe(root);
+  expect(plan.commands[0]?.resourceProvider).toEqual(provider);
+  expect(plan.resourceEffects.join('\n')).toContain(root);
+  expect(plan.resourceEffects.join('\n')).toContain(provider.binaryRoot);
+  for (const sha of Object.values(provider.sha256)) expect(plan.resourceEffects.join('\n')).toContain(sha);
+  expect(plan.resourceEffects.join('\n')).toContain('새 합성 클러스터');
+  expect(plan.resourceEffects.join('\n')).toContain('실제 프로세스 종료·포트 부재·자료 제거');
+  const stored = JSON.parse((db.prepare('SELECT plan_json FROM plans WHERE id=?').get(plan.planId) as { plan_json: string }).plan_json);
+  expect(stored.plan.nativeResourceRoot).toBe(root);
+  expect(stored.plan.fingerprint).toBe(plan.fingerprint);
+  store.approve(plan.planId, plan.fingerprint);
+  const scope = JSON.parse((db.prepare('SELECT scope_json FROM approvals WHERE plan_id=?').get(plan.planId) as { scope_json: string }).scope_json);
+  expect(scope.nativeResourceRoot).toBe(root);
+  expect(scope.commands[0].resourceProvider).toEqual(provider);
+  expect(scope.fingerprint).toBe(plan.fingerprint);
+  expect(store.hasApproval(plan.planId)).toBe(true);
+  expect(execFileSync).toHaveBeenCalled();
+  const otherRoot = join(files.directory, '다른전용자원');
+  await mkdir(otherRoot);
+  const changedStore = new ProjectStore(db, realpathSync.native(otherRoot));
+  expect(() => changedStore.hasApproval(plan.planId)).toThrowError(expect.objectContaining({ code: 'plan-stale' }));
+  expect(changedStore.inspect(input, 'quick').fingerprint).not.toBe(plan.fingerprint);
+  await writeFile(join(provider.binaryRoot, `postgres${process.platform === 'win32' ? '.exe' : ''}`), 'changed-synthetic-binary\n');
+  expect(() => store.hasApproval(plan.planId)).toThrowError(expect.objectContaining({ code: 'plan-stale' }));
+  expect(() => store.inspect(input, 'quick')).toThrowError(expect.objectContaining({ code: 'invalid-input' }));
+  const evidenceRoot = resolve('.runtime/릴리스020/시험보완');
+  await mkdir(evidenceRoot, { recursive: true });
+  await writeFile(join(evidenceRoot, '계획승인합성근거.json'), JSON.stringify({ provider, nativeResourceRoot: root,
+    fingerprint: plan.fingerprint, scope, resourceEffects: plan.resourceEffects,
+    versionCalls: vi.mocked(execFileSync).mock.calls.map(([path, args]) => ({ path, args })),
+    binaryMutationRejected: true, versionResponses: 'exact-path-and-version-args-stub', actualPgProcesses: 0 }));
+});
+
+test('native와 Docker 혼합 선택은 inspect에서 거절하고 서로 다른 native hash도 등록에서 거절한다', async () => {
+  const { db, source, files } = await fixture();
+  const resourceRoot = join(files.directory, '전용자원');
+  await mkdir(resourceRoot);
+  const provider = await registeredNativeProvider(files.directory);
+  const store = new ProjectStore(db, realpathSync.native(resourceRoot));
+  const commands = [
+    { ...source.project.commands[0]!, resources: ['postgres-test'] as ['postgres-test'], resourceProvider: provider },
+    { ...source.project.commands[0]!, id: 'other', resources: ['postgres-test'] as ['postgres-test'] },
+  ];
+  const mixed = { ...source, project: { ...source.project, commands }, checks: source.checks.map((check, index) => ({ ...check, commandId: index === 0 ? 'run' : 'other' })) };
+  const input = snapshot(files.directory, mixed);
+  store.register(input);
+  expect(() => store.inspect(input, 'quick')).toThrowError(expect.objectContaining({ code: 'invalid-input' }));
+  const changed = { ...mixed, project: { ...mixed.project, commands: commands.map(command => ({ ...command,
+    resourceProvider: { ...provider, sha256: { ...provider.sha256, postgres: '0'.repeat(64) } } })) } };
+  expect(() => store.sync(snapshot(files.directory, changed), true)).toThrowError(expect.objectContaining({ code: 'invalid-input' }));
+  expect(store.get(source.project.id).activeCatalogHash).toBe(input.contentHash);
+});
+
+test('기존 Docker catalog plan 승인 JSON은 native 지원을 읽어도 바이트와 지문이 동일하다', async () => {
+  const { db, source, store, initial } = await fixture();
+  store.register(initial);
+  const plan = store.inspect(initial, 'quick');
+  store.approve(plan.planId, plan.fingerprint);
+  const catalog = db.prepare('SELECT source_json FROM catalogs WHERE project_id=?').get(source.project.id);
+  const originalPlan = db.prepare('SELECT plan_json,fingerprint FROM plans WHERE id=?').get(plan.planId);
+  const originalScope = db.prepare('SELECT scope_json FROM approvals WHERE plan_id=?').get(plan.planId);
+  const resourceRoot = join(initial.realPath, '전용자원');
+  await mkdir(resourceRoot);
+  const nativeStore = new ProjectStore(db, realpathSync.native(resourceRoot));
+  expect(nativeStore.inspect(initial, 'quick').fingerprint).toBe(plan.fingerprint);
+  expect(nativeStore.hasApproval(plan.planId)).toBe(true);
+  expect(db.prepare('SELECT source_json FROM catalogs WHERE project_id=?').get(source.project.id)).toEqual(catalog);
+  expect(db.prepare('SELECT plan_json,fingerprint FROM plans WHERE id=?').get(plan.planId)).toEqual(originalPlan);
+  expect(db.prepare('SELECT scope_json FROM approvals WHERE plan_id=?').get(plan.planId)).toEqual(originalScope);
 });

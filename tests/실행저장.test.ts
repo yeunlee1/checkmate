@@ -184,9 +184,13 @@ test('두 실제 WAL 연결의 중첩 접수에서 BUSY SNAPSHOT을 storage-busy
     return statement;
   });
   try {
-    expect(() => store.admitRun(input)).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
-    expect(overlapped).toBe(true);
-    expect(sqliteCode).toBe('SQLITE_BUSY_SNAPSHOT');
+    // 즉시 접수의 중첩 안에서도 실제 오래된 WAL 읽기 snapshot의 실패를 유지한다.
+    db.transaction(() => {
+      db.prepare('SELECT count(*) AS count FROM runs').get();
+      expect(() => store.admitRun(input)).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+      expect(overlapped).toBe(true);
+      expect(sqliteCode).toBe('SQLITE_BUSY_SNAPSHOT');
+    })();
     expect(store.admitRun(input)).toEqual({ runId: (db.prepare('SELECT run_id FROM requests WHERE request_id = ?')
       .get(input.requestId) as { run_id: string }).run_id, reused: true });
     expect(db.prepare('SELECT count(*) AS count FROM runs').get()).toEqual({ count: 1 });

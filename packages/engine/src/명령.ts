@@ -4,13 +4,17 @@ import { Command, CommanderError } from 'commander';
 import { engineVersion } from './버전.js';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contracts/api';
 import type { ApiMethod, ApiResponse } from '@checkmate/contracts/api';
 import { ReportError, validateReport } from './보고서.js';
-import { callService, initializeLocalStore } from './서비스/클라이언트.js';
+import { callService, initializeLocalStore, createAgentInvoker } from './서비스/클라이언트.js';
 import { startAgentServer } from './연결/에이아이서버.js';
+import { StoreSchemaError } from './저장/연결.js';
+import { BackupError, migrateStoredData } from './저장/백업.js';
+import { acquireServiceOwnership } from './서비스/상주서비스.js';
+import { dataPaths, rejectLinks } from './연결/개인경로.js';
 import { exportRunHtml } from './서비스/보고서내보내기.js';
 
 const program = new Command();
@@ -22,6 +26,7 @@ const write = (data: unknown, message: string) => {
 program.name('checkmate').description('사람과 AI가 함께 사용하는 로컬 검증 도구').version(engineVersion)
   .option('--json', 'JSON 결과를 출력한다.')
   .option('--data-dir <path>', '체크메이트 전용 자료 폴더를 지정한다.')
+  .option('--workspace <id>', '등록된 작업 폴더 식별자를 명시한다.')
   .exitOverride()
   .configureOutput({ writeErr: () => {} });
 program.hook('preAction', () => { jsonMode = program.opts().json === true; });
@@ -57,7 +62,10 @@ function exitForError(code: string): number {
   return 5;
 }
 async function invoke(method: ApiMethod, input: unknown, requestId: string = randomUUID()): Promise<ApiResponse> {
-  return callService(apiRequestSchema.parse({ apiVersion: 1, requestId, method, input }), clientOptions());
+  const selected = program.opts().workspace;
+  const scoped = ['checks', 'inspect', 'start', 'history', 'gaps', 'sync', 'activate', 'import-history'].includes(method);
+  const target = selected !== undefined && scoped ? { ...input as Record<string, unknown>, workspaceId: String(selected) } : input;
+  return callService(apiRequestSchema.parse({ apiVersion: 1, requestId, method, input: target }), clientOptions());
 }
 function output(response: ApiResponse): void {
   process.stdout.write(`${JSON.stringify(response, null, jsonMode ? undefined : 2)}\n`);
@@ -157,8 +165,26 @@ catalog.command('activate').requiredOption('--project <id>').requiredOption('--h
     if (!opts.confirm) throw new ServiceError('needs-approval');
     output(await invoke('activate', { projectId: opts.project, contentHash: opts.hash }));
   });
+program.command('handoff <run>').description('사람이 정확한 실행과 공개 ownerId를 확인해 제어권을 인계한다.')
+  .requiredOption('--owner <id>').option('--expected-owner <id>').requiredOption('--note <text>').option('--confirm')
+  .action(async (run: string, opts: { owner: string; expectedOwner?: string; note: string; confirm?: boolean }) => {
+    if (!opts.confirm) throw new ServiceError('needs-approval', '실행과 기존 소유자 및 대상 ownerId를 확인한 뒤 --confirm을 지정해 주세요.');
+    output(await invoke('handoff-run', { runId: run, ownerId: opts.owner, expectedOwnerId: opts.expectedOwner ?? null, note: opts.note, confirm: true }));
+  });
+program.command('migrate-storage').description('서비스가 유휴 종료된 뒤 기존 저장 자료를 명시적으로 이행한다.').option('--confirm')
+  .action(async (opts: { confirm?: boolean }) => {
+    if (!opts.confirm) throw new ServiceError('needs-approval', '같은 자료 폴더의 서비스가 종료된 상태를 확인한 뒤 --confirm을 지정해 주세요.');
+    const paths = dataPaths(clientOptions().dataRoot);
+    await rejectLinks(paths.root);
+    await rejectLinks(join(paths.state, 'checkmate.sqlite'));
+    const release = await acquireServiceOwnership(paths);
+    try {
+      const saved = await migrateStoredData(paths);
+      output({ apiVersion: 1, requestId: randomUUID(), ok: true, data: { migrated: true, dataRoot: paths.root, ...saved } });
+    } finally { await release(); }
+  });
 program.command('mcp').description('기존 구독 AI가 사용하는 stdio 서버를 시작한다.')
-  .action(async () => { await startAgentServer((request) => callService(request, clientOptions(), 'agent')); });
+  .action(async () => { await startAgentServer(createAgentInvoker(clientOptions())); });
 
 try {
   await program.parseAsync();
@@ -166,8 +192,8 @@ try {
   if (error instanceof CommanderError && error.exitCode === 0) {
     process.exitCode = 0;
   } else {
-    const known = error instanceof ReportError || error instanceof ServiceError;
-    const code = known ? error.code : error instanceof CommanderError || error instanceof z.ZodError ? 'invalid-input' : 'internal-error';
+    const known = error instanceof ReportError || error instanceof ServiceError || error instanceof StoreSchemaError || error instanceof BackupError;
+    const code = error instanceof BackupError ? 'storage-error' : known ? error.code : error instanceof CommanderError || error instanceof z.ZodError ? 'invalid-input' : 'internal-error';
     const message = known ? error.message : code === 'invalid-input' ? '명령과 인자를 확인해 주세요.' : '명령을 처리하지 못했습니다.';
     process.exitCode = error instanceof ReportError ? error.exitCode : exitForError(code);
     jsonMode = jsonMode || process.argv.includes('--json');

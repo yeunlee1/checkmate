@@ -26,7 +26,7 @@ export async function rejectLinks(path: string): Promise<void> {
   }
 }
 
-async function makePrivate(path: string, file = false): Promise<void> {
+export async function makePrivate(path: string, file = false): Promise<void> {
   if (process.platform !== 'win32') { await chmod(path, file ? 0o600 : 0o700); return; }
   const encodedPath = Buffer.from(path, 'utf8').toString('base64');
   const access = file ? 'File' : 'Directory';

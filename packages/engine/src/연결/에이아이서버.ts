@@ -41,7 +41,7 @@ export function createAgentServer(invoke: AgentInvoker): McpServer {
         if (method === 'start') {
           const parsed = apiInputs.start.extend({ requestId: z.uuid() }).parse(input);
           requestId = parsed.requestId;
-          args = { projectId: parsed.projectId, planId: parsed.planId };
+          args = { projectId: parsed.projectId, planId: parsed.planId, ...(parsed.workspaceId === undefined ? {} : { workspaceId: parsed.workspaceId }) };
         }
         const parsedInput = apiInputs[method].parse(args);
         response = await invoke(apiRequestSchema.parse({ apiVersion: 1, requestId, method, input: JSON.parse(JSON.stringify(parsedInput)) }));

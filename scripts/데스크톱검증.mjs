@@ -1,19 +1,20 @@
 // 실제 Electron 화면에서 합성 프로젝트의 등록과 승인 및 결과 조회를 검증한다.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { _electron, chromium } from 'playwright';
 import { expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { startLocalService } from '../packages/engine/dist/서비스/상주서비스.js';
 
-const base = resolve('.runtime/검증/데스크톱');
+const base = resolve(process.env.CHECKMATE_TEST_ROOT ?? '.runtime/검증/데스크톱');
 const root = join(base, randomUUID());
 const project = join(root, '합성 프로젝트');
 const dataRoot = join(root, '관리 자료');
-const artifacts = resolve('.runtime/데스크톱검증');
+const artifacts = resolve(process.env.CHECKMATE_TEST_ARTIFACTS ?? '.runtime/데스크톱검증');
 const projectId = randomUUID();
 let service;
 let app;
@@ -129,7 +130,18 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
   await page.reload();
   await expect(page.getByTestId('language-select')).toHaveValue('en');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await page.getByTestId('project-select').selectOption(projectId);
+  const projects = await page.evaluate(() => window.checkmate.request('projects', {}));
+  assert.equal(projects.ok, true);
+  assert.equal(projects.data.nextCursor, null);
+  const actualPath = normalize(realpathSync.native(project));
+  const realPath = process.platform === 'win32' ? actualPath.toLowerCase() : actualPath;
+  const matching = projects.data.items.filter(item => item.id === projectId && item.realPath === realPath);
+  assert.equal(matching.length, 1, '등록 ID와 실제 경로가 같은 작업 폴더가 하나여야 합니다.');
+  const { workspaceId } = matching[0];
+  assert.match(workspaceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  await page.getByTestId('project-select').selectOption(workspaceId);
+  await expect(page.getByTestId('project-select')).toHaveValue(workspaceId);
+  await expect(page.getByTestId('project-select').locator('option:checked')).toContainText(realPath);
   await page.getByTestId('nav-history').click();
   await page.locator('.history-list .history-open').first().click();
   await expect(page.locator('.run-panel .panel-heading').getByText('Passed', { exact: true })).toBeVisible();
@@ -251,7 +263,7 @@ emit('case-result', { testId: 'logic-1', status: 'passed', requirementId: 'requi
     await page.screenshot({ path: join(artifacts, `위반위치-${zoom}.png`), fullPage: true });
   }
   assert.deepEqual(errors, []);
-  const report = { passed: true, runId, projectId, security, sizes, errors, reportExport: true, backupRestore: true, importedHistory: true, designOverlay: true,
+  const report = { passed: true, runId, projectId, workspaceId, realPath, security, sizes, errors, reportExport: true, backupRestore: true, importedHistory: true, designOverlay: true,
     liveProgress: true, englishInterface: true, languagePersistence: true, englishReport: true, bundledFont: true,
     runEvidenceIsolation: true, compactNavigationLabels: true, englishResourceApproval: true,
     scope: '실제 Electron과 로컬 SQLite 및 작업 프로세스. OS 파일 선택 결과만 합성 경로로 고정.' };

@@ -37,7 +37,7 @@ test('자원 정리 후에도 새 프로필 실행을 차단하고 이전 실행
       cleanup: { verified: true, checkedAt: new Date().toISOString(), reason: '합성 컨테이너 부재 확인' } });
     return { ...initial, state: 'unverifiable', workerExitCode: 1, environmentVerified: false, evidenceVerified: false, cleanupVerified: false };
   }, paths);
-  const endpoint = await serveLocal(paths, (request, role) => product.handle(request, role));
+  const endpoint = await serveLocal(paths, (request, role, context) => product.handle(request, role, context), product.sessions);
   cleanup.push(endpoint.close);
   const call = (method: ApiMethod, input: ApiRequest['input']) =>
     product.handle({ apiVersion: 1, requestId: randomUUID(), method, input }, 'human');

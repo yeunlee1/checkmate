@@ -48,9 +48,9 @@ export function Help() {
           'You can add the MCP connection shown in Settings to an AI client. MCP lets the AI call CheckMate checks. CheckMate does not ask for a model API key.')}</p>
         <p>{text('소스나 검사 기준이 바뀌면 새 계획을 확인하고 다시 승인하세요. 실패를 고칠 때 검사나 기대값을 약화하지 마세요.',
           'If source code or check criteria change, review and approve a new plan. Do not weaken checks or expected values to make a failure pass.')}</p></details>
-      <details><summary>{text('자료 백업과 개발판 업데이트', 'Backups and development updates')}</summary>
-        <p>{text('설정에서 현재 자료를 백업할 수 있습니다. 복구는 새 빈 폴더에만 진행합니다. 현재 개발판은 서명되지 않았고 자동 업데이트를 제공하지 않습니다.',
-          'Back up current data in Settings. Restore only to a new empty folder. This development build is unsigned and has no automatic updates.')}</p></details>
+      <details><summary>{text('자료 백업과 앱 업데이트', 'Backups and app updates')}</summary>
+        <p>{text('설정에서 현재 자료를 백업할 수 있습니다. 복구는 새 빈 폴더에만 진행합니다. 현재 배포본은 서명되지 않았습니다. Windows 설치본은 설정의 앱 업데이트에서 새 버전을 확인합니다. 업데이트 다운로드가 준비되면 검사와 AI 연결이 정상 종료된 뒤 재시작하여 적용합니다.',
+          'Back up current data in Settings. Restore only to a new empty folder. The current release is unsigned. In the installed Windows app, check for new versions under App updates in Settings. Once the update is downloaded and ready, restart to apply it after checks and AI connections end normally.')}</p></details>
     </div>
   </section>;
 }

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, expect, test } from 'vitest';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
-import { ResourceStore, type ResourceRecord } from '../packages/engine/src/저장/자원저장.js';
+import { ResourceStore, type DockerResourceRecord } from '../packages/engine/src/저장/자원저장.js';
 import { createStoreFixture } from './저장시험자료.js';
 import { databaseResourceKinds } from '@checkmate/contracts/resources';
 import { databaseSpecs } from '../packages/engine/src/자원/데이터베이스종류.js';
@@ -26,12 +26,15 @@ test.each(databaseResourceKinds)('%s 생성 의도는 재개방 뒤 유지되고
   runs.admitRun({ projectId: plan.project.id, planId: plan.plan.id, runId, requestId: randomUUID(), requestHash: 'e'.repeat(64), createdAt: new Date().toISOString() });
   const id = randomUUID();
   const spec = databaseSpecs[kind];
-  const intent: ResourceRecord = { id, runId, kind, ownerTokenHash: 'f'.repeat(64), state: 'intent', cleanup: null,
+  const intent: DockerResourceRecord = { id, runId, kind, ownerTokenHash: 'f'.repeat(64), state: 'intent', cleanup: null,
     descriptor: { name: `cm-${spec.prefix}-${runId}-${id}`, image: spec.image, endpoint: 'unix:///var/run/docker.sock', daemonId: 'test-daemon' } };
   new ResourceStore(db).intent(intent);
+  const originalDescriptor = (db.prepare('SELECT descriptor_json FROM resources WHERE id=?').get(id) as { descriptor_json: string }).descriptor_json;
+  expect(originalDescriptor).toBe(JSON.stringify(intent.descriptor));
   db.close(); db = connectStore(files.dbPath);
   const store = new ResourceStore(db);
   expect(store.list(runId)).toEqual([intent]);
+  expect((db.prepare('SELECT descriptor_json FROM resources WHERE id=?').get(id) as { descriptor_json: string }).descriptor_json).toBe(originalDescriptor);
   expect(() => store.intent(intent)).toThrow();
   expect(() => store.intent({ ...intent, kind: kind === 'postgres-test' ? 'mysql-test' : 'postgres-test' })).toThrow();
   expect(() => store.intent({ ...intent, id: randomUUID(), runId: randomUUID() })).toThrow();
@@ -40,8 +43,10 @@ test.each(databaseResourceKinds)('%s 생성 의도는 재개방 뒤 유지되고
   expect(() => store.update(id, ['creating'], { ...intent, state: 'intent' })).toThrow();
   expect(() => store.update(id, ['creating'], { ...intent, state: 'cleaned', cleanup: { verified: true, checkedAt: new Date().toISOString(), reason: '일시 부재' } })).toThrow();
   const created = store.update(id, ['creating'], { state: 'created', descriptor: { ...intent.descriptor, containerId: 'b'.repeat(64), hostPort: 40001 }, cleanup: null });
+  if (created.descriptor.provider === 'native') throw new Error('기존 Docker 자원 분기가 바뀌었습니다.');
+  const createdDescriptor = created.descriptor;
   expect(() => store.update(id, ['intent'], { ...created, state: 'ready' })).toThrow();
-  expect(() => store.update(id, ['created'], { ...created, descriptor: { ...created.descriptor, containerId: 'c'.repeat(64) } })).toThrow();
+  expect(() => store.update(id, ['created'], { ...created, descriptor: { ...createdDescriptor, containerId: 'c'.repeat(64) } })).toThrow();
   expect(() => store.update(id, ['created'], { ...created, state: 'cleaned' })).toThrow();
   store.update(id, ['created'], { ...created, state: 'cleaned', cleanup: { verified: true, checkedAt: new Date().toISOString(), reason: '합성 부재 확인' } });
   expect(() => store.update(id, ['cleaned'], { ...created, state: 'ready' })).toThrow();

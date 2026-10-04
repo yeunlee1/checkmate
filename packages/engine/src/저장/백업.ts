@@ -8,7 +8,8 @@ import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { dataPaths, prepareDataPaths, rejectLinks, type DataPaths } from '../연결/개인경로.js';
 import { verifyEvidence } from '../증거검증.js';
-import { schemaChecksum, schemaTables, schemaVersion } from './스키마.js';
+import { storeMigrations } from './스키마.js';
+import { assertMigrationIdle, assertStoreSchema, connectStore, StoreSchemaError } from './연결.js';
 
 const databaseName = 'checkmate.sqlite';
 const manifestName = '백업명세.json';
@@ -17,8 +18,8 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const fileSchema = z.strictObject({ path: z.string().min(1), sha256: hashSchema,
   byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
 const manifestSchema = z.strictObject({ formatVersion: z.literal(1), id: z.uuid(),
-  createdAt: z.iso.datetime(), schemaVersion: z.literal(schemaVersion), schemaChecksum: z.literal(schemaChecksum),
-  files: z.array(fileSchema).min(1) });
+  createdAt: z.iso.datetime(), schemaVersion: z.number().int().min(1).max(2), schemaChecksum: hashSchema,
+  files: z.array(fileSchema).min(1) }).refine(value => storeMigrations.some(item => item.version === value.schemaVersion && item.checksum === value.schemaChecksum), '지원하지 않는 저장 스키마입니다.');
 
 export type BackupManifest = z.infer<typeof manifestSchema>;
 export type BackupResult = { backupDirectory: string; manifestHash: string; manifest: BackupManifest };
@@ -76,15 +77,7 @@ function validateDatabase(db: Database.Database): EvidenceRow[] {
   if (db.pragma('quick_check', { simple: true }) !== 'ok'
     || (db.pragma('foreign_key_check') as unknown[]).length !== 0)
     fail('database-corrupt', 'SQLite 무결성 또는 연결 검사가 실패했습니다.');
-  const versions = db.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version')
-    .all() as { version: number; checksum: string }[];
-  if (versions.length !== 1 || versions[0]?.version !== schemaVersion || versions[0].checksum !== schemaChecksum)
-    fail('unsupported-schema', '지원하지 않는 저장 스키마입니다.');
-  const objects = db.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
-    .all() as { type: string; name: string }[];
-  const tables = objects.filter((item) => item.type === 'table').map((item) => item.name);
-  if (tables.length !== schemaTables.length || schemaTables.some((name) => !tables.includes(name)))
-    fail('unsupported-schema', '저장 테이블 구성이 일치하지 않습니다.');
+  try { assertStoreSchema(db); } catch { fail('unsupported-schema', '지원하지 않는 저장 스키마입니다.'); }
   const active = (db.prepare("SELECT count(*) AS count FROM runs WHERE state IN ('queued','running') OR finalized_at IS NULL")
     .get() as { count: number }).count;
   if (active !== 0) fail('active-runs', '진행 중이거나 확정되지 않은 실행이 있어 백업을 거부합니다.');
@@ -239,7 +232,7 @@ async function readManifest(directory: string): Promise<BackupManifest> {
   if (!result.success) fail('invalid-manifest', '백업 명세 형식이 올바르지 않습니다.');
   return result.data;
 }
-async function verifyBackup(directory: string): Promise<BackupManifest> {
+export async function verifyBackup(directory: string): Promise<BackupManifest> {
   const manifest = await readManifest(directory);
   const root = resolve(directory);
   const names = manifest.files.map((file) => file.path);
@@ -251,6 +244,8 @@ async function verifyBackup(directory: string): Promise<BackupManifest> {
   const db = new Database(dbPath, { readonly: true, fileMustExist: true });
   try {
     const rows = validateDatabase(db);
+    const version = assertStoreSchema(db);
+    if (version !== manifest.schemaVersion || storeMigrations[version - 1]?.checksum !== manifest.schemaChecksum) fail('unsupported-schema', '백업 명세와 저장 스키마가 다릅니다.');
     const expected = rows.map(evidencePath);
     if (names.length !== expected.length + 1 || expected.some((name, index) => name !== names[index + 1]))
       fail('invalid-manifest', '백업 증거 목록과 DB 기록이 다릅니다.');
@@ -262,6 +257,25 @@ async function verifyBackup(directory: string): Promise<BackupManifest> {
     }
   } finally { db.close(); }
   return manifest;
+}
+
+// 호출자는 같은 자료 폴더의 서비스 소유권을 확보한 상태를 끝까지 유지한다.
+export async function migrateStoredData(paths: DataPaths): Promise<{ backupDirectory: string; manifestHash: string }> {
+  const path = join(paths.state, databaseName);
+  await rejectLinks(paths.root);
+  await rejectLinks(path);
+  const original = new Database(path, { readonly: true, fileMustExist: true });
+  let saved: BackupResult;
+  try {
+    if (original.pragma('quick_check', { simple: true }) !== 'ok') throw new StoreSchemaError('storage-corrupt', '원본 저장 파일의 무결성이 손상됐습니다.');
+    if (assertStoreSchema(original) !== 1) throw new StoreSchemaError('invalid-state', '이행 대상인 버전 1 저장 파일이 아닙니다.');
+    assertMigrationIdle(original);
+    saved = await createBackup(original, paths, join(paths.root, 'backups'));
+    await verifyBackup(saved.backupDirectory);
+  } finally { original.close(); }
+  const migrated = connectStore(path, { migrate: true });
+  migrated.close();
+  return { backupDirectory: saved.backupDirectory, manifestHash: saved.manifestHash };
 }
 
 export async function createBackup(db: Database.Database, paths: DataPaths, backupRoot: string): Promise<BackupResult> {
@@ -319,7 +333,7 @@ export async function createBackup(db: Database.Database, paths: DataPaths, back
       fail('database-changed', '백업 중 원본 DB가 바뀌었습니다.');
     validateDatabase(db);
     const manifest: BackupManifest = { formatVersion: 1, id, createdAt: new Date().toISOString(),
-      schemaVersion, schemaChecksum, files };
+      schemaVersion: assertStoreSchema(db), schemaChecksum: storeMigrations[assertStoreSchema(db) - 1]!.checksum, files };
     const bytes = Buffer.from(JSON.stringify(manifest), 'utf8');
     await newPrivateFile(join(directory, manifestName), bytes);
     const manifestHash = sha256(bytes);

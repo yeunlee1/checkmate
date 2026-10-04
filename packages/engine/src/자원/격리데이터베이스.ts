@@ -4,9 +4,10 @@ import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
 import { promisify } from 'node:util';
-import type { ResourceDescriptor, ResourceRecord, ResourceStore } from '../저장/자원저장.js';
+import type { DockerResourceDescriptor as ResourceDescriptor, DockerResourceRecord as ResourceRecord, ResourceRecord as AnyResourceRecord, ResourceStore } from '../저장/자원저장.js';
 import { localDockerEndpointSchema } from '../저장/자원저장.js';
-import { databaseResourceKinds, databaseResourceNames, type DatabaseResourceKind } from '@checkmate/contracts/resources';
+import { databaseResourceKinds, databaseResourceNames, resourceProviderSchema, type DatabaseResourceKind, type ResourceProvider } from '@checkmate/contracts/resources';
+import type { NativePostgresResources } from './네이티브포스트그레스.js';
 import { databaseConnection, databaseSpecs } from './데이터베이스종류.js';
 
 const execFileAsync = promisify(execFile);
@@ -95,7 +96,10 @@ async function bounded<T>(work: (signal: AbortSignal) => Promise<T>, timeoutMs: 
 
 export class DatabaseResources {
   private readonly preparing = new Set<string>();
-  constructor(private readonly store: ResourceStore, private readonly driver: DatabaseTestDriver = systemDriver) {}
+  constructor(private readonly store: ResourceStore, private readonly driver: DatabaseTestDriver = systemDriver,
+    private readonly native?: NativePostgresResources) {}
+
+  get nativeResourceRoot(): string | undefined { return this.native?.resourceRoot; }
 
   private async command(endpoint: string, args: string[], options?: CommandOptions): Promise<string> {
     localDockerEndpointSchema.parse(endpoint);
@@ -189,7 +193,9 @@ export class DatabaseResources {
 
   private update(record: ResourceRecord, state: ResourceRecord['state'], descriptor = record.descriptor,
     cleanup: ResourceRecord['cleanup'] = null): ResourceRecord {
-    return this.store.update(record.id, [record.state], { state, descriptor, cleanup });
+    const updated = this.store.update(record.id, [record.state], { state, descriptor, cleanup });
+    if (updated.descriptor.provider === 'native') throw new Error('Docker 자원의 제공자가 다릅니다.');
+    return { ...updated, descriptor: updated.descriptor };
   }
 
   private async waitForAbsence(record: ResourceRecord, id: string, signal: AbortSignal): Promise<void> {
@@ -200,13 +206,18 @@ export class DatabaseResources {
     throw new Error('정리 후 컨테이너가 남아 있습니다.');
   }
 
-  async prepare(runId: string, ownerToken: string, signal: AbortSignal, kinds: readonly DatabaseResourceKind[] = ['postgres-test']): Promise<{ environment: Record<string, string>; secrets: string[] }> {
+  async prepare(runId: string, ownerToken: string, signal: AbortSignal, kinds: readonly DatabaseResourceKind[] = ['postgres-test'], frozenProvider?: ResourceProvider): Promise<{ environment: Record<string, string>; secrets: string[] }> {
     if (this.preparing.has(runId)) throw new Error('같은 실행의 시험 DB 준비가 진행 중입니다.');
     this.preparing.add(runId);
     try {
       if (!kinds.length || new Set(kinds).size !== kinds.length || kinds.some(kind => !databaseResourceKinds.includes(kind)))
         throw new Error('시험 DB 선언이 올바르지 않습니다.');
       if (this.store.list(runId).length) throw new Error('같은 실행의 시험 DB 자원이 이미 기록됐습니다.');
+      const provider = frozenProvider === undefined ? undefined : resourceProviderSchema.parse(frozenProvider);
+      if (provider?.mode === 'native') {
+        if (!this.native || kinds.length !== 1 || kinds[0] !== 'postgres-test') throw new Error('네이티브 PostgreSQL 제공자 구성이 필요합니다.');
+        return await this.native.prepare(runId, ownerToken, signal, provider);
+      }
       const combined = { environment: {} as Record<string, string>, secrets: [] as string[] };
       for (const kind of kinds) {
         const prepared = await this.prepareOne(runId, ownerToken, signal, kind);
@@ -279,12 +290,16 @@ export class DatabaseResources {
     }
   }
 
-  async cleanup(runId: string): Promise<{ verified: boolean; resources: ResourceRecord[] }> {
+  async cleanup(runId: string): Promise<{ verified: boolean; resources: AnyResourceRecord[] }> {
     const deadline = AbortSignal.timeout(60000);
     const resources = this.store.list(runId);
     for (const initial of resources) {
       if (initial.state === 'cleaned') continue;
-      let record = initial;
+      if (initial.descriptor.provider === 'native') {
+        if (this.native) await this.native.cleanupResource(initial);
+        continue;
+      }
+      let record: ResourceRecord = { ...initial, descriptor: initial.descriptor };
       try {
         await this.sameDaemon(record, deadline);
         const target = record.descriptor.containerId ?? record.descriptor.name;

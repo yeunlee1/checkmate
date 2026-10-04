@@ -3,9 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
-import { schemaChecksum, schemaTables, schemaVersion } from '../packages/engine/src/저장/스키마.js';
+import { schemaChecksum, schemaSql, concurrencySql, currentSchemaTables, storeMigrations } from '../packages/engine/src/저장/스키마.js';
 import { createStoreFixture } from './저장시험자료.js';
 
 const time = '2026-09-25T03:00:00.000Z';
@@ -26,7 +26,7 @@ describe('SQLite 저장 스키마', () => {
     return db;
   }
 
-  function seed() {
+  function seed(idle = false) {
     const connection = db!;
     const projectId = randomUUID();
     const workspaceId = randomUUID();
@@ -43,14 +43,19 @@ describe('SQLite 저장 스키마', () => {
       .run(planId, workspaceId, catalogId, digest('c'), '{}', digest('d'), time);
     connection.prepare('INSERT INTO runs (id, workspace_id, plan_id, origin, state, phase, started_at, summary_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
       .run(runId, workspaceId, planId, 'live', 'queued', '준비', time, '{}');
+    if (idle) connection.prepare('UPDATE runs SET state=?,verdict=?,finalized_at=?,summary_json=? WHERE id=?')
+      .run('unverifiable', 'unknown', time, JSON.stringify({ schemaVersion: 1, runId, projectId, profile: 'quick', origin: 'live',
+        state: 'unverifiable', verdict: 'unknown', planHash: digest('c'), sourceBefore: digest('d'), sourceAfter: null,
+        workerExitCode: null, environmentVerified: null, evidenceVerified: null, cleanupVerified: true, finalized: true,
+        plannedChecks: [], requiredChecks: [], cases: [], reasons: ['synthetic-original'] }), runId);
     return { projectId, workspaceId, catalogId, planId, runId };
   }
 
-  it('17개 테이블과 연결 설정을 원자적으로 준비한다.', () => {
+  it('버전 1과 추가 이행 및 연결 설정을 원자적으로 준비한다.', () => {
     const connection = open();
     const tables = connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
       .all() as { name: string }[];
-    expect(tables.map((row) => row.name).sort()).toEqual([...schemaTables].sort());
+    expect(tables.map((row) => row.name).sort()).toEqual([...currentSchemaTables].sort());
     const indexes = connection.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'")
       .all() as { name: string }[];
     expect(indexes.map((row) => row.name).sort()).toEqual([
@@ -62,8 +67,8 @@ describe('SQLite 저장 스키마', () => {
     expect(connection.pragma('busy_timeout', { simple: true })).toBe(5000);
     expect(connection.pragma('synchronous', { simple: true })).toBe(2);
     expect(connection.pragma('foreign_key_check')).toEqual([]);
-    expect(connection.prepare('SELECT version, checksum FROM schema_migrations').get())
-      .toEqual({ version: schemaVersion, checksum: schemaChecksum });
+    expect(connection.prepare('SELECT version, checksum FROM schema_migrations ORDER BY version').all())
+      .toEqual(storeMigrations.map(({ version, checksum }) => ({ version, checksum })));
   });
 
   it('재개방 시 등록 자료와 스키마 버전을 보존한다.', () => {
@@ -74,7 +79,7 @@ describe('SQLite 저장 스키마', () => {
     const reopened = open();
     expect(reopened.prepare('SELECT name FROM projects WHERE id = ?').get(ids.projectId)).toEqual({ name: '합성 프로젝트' });
     expect(reopened.prepare('SELECT id FROM runs WHERE id = ?').get(ids.runId)).toEqual({ id: ids.runId });
-    expect(reopened.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 1 });
+    expect(reopened.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toEqual({ count: 2 });
   });
 
   it('연결 FK와 중복, 열거값, JSON 제약을 거절한다.', () => {
@@ -193,19 +198,19 @@ describe('SQLite 저장 스키마', () => {
     expect(() => connectStore(fixture.dbPath)).toThrowError(expect.objectContaining({ code: 'schema-mismatch' }));
     const reader = new Database(fixture.dbPath, { readonly: true });
     try {
-      expect(reader.prepare('SELECT checksum FROM schema_migrations').get()).toEqual({ checksum: digest('0') });
+      expect(reader.prepare('SELECT checksum FROM schema_migrations WHERE version=1').get()).toEqual({ checksum: digest('0') });
     } finally { reader.close(); }
   });
 
   it('새 손상 fixture의 미지원 버전을 거절하고 기록을 보존한다.', () => {
     const connection = open();
-    connection.prepare('UPDATE schema_migrations SET version = 2 WHERE version = 1').run();
+    connection.prepare('UPDATE schema_migrations SET version = 9 WHERE version = 1').run();
     connection.close();
     db = undefined;
     expect(() => connectStore(fixture.dbPath)).toThrowError(expect.objectContaining({ code: 'unsupported-version' }));
     const reader = new Database(fixture.dbPath, { readonly: true });
     try {
-      expect(reader.prepare('SELECT version FROM schema_migrations').get()).toEqual({ version: 2 });
+      expect(reader.prepare('SELECT version FROM schema_migrations WHERE version=9').get()).toEqual({ version: 9 });
     } finally { reader.close(); }
   });
 
@@ -250,4 +255,51 @@ describe('SQLite 저장 스키마', () => {
     await expect(stat(fixture.directory)).resolves.toBeDefined();
     await writeFile(marker, original);
   });
+  it('고정 v1 queued 자료는 명시 이행에도 거부하고 원본 버전과 JSON을 보존한다.', () => {
+    db = new Database(fixture.dbPath);
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    seed();
+    const original = db.prepare('SELECT * FROM runs').all();
+    db.close(); db = undefined;
+    expect(() => connectStore(fixture.dbPath, { migrate: true })).toThrowError(expect.objectContaining({ code: 'storage-busy' }));
+    const reader = new Database(fixture.dbPath, { readonly: true });
+    try {
+      expect(reader.prepare('SELECT version,checksum FROM schema_migrations').all()).toEqual([{ version: 1, checksum: schemaChecksum }]);
+      expect(reader.prepare('SELECT * FROM runs').all()).toEqual(original);
+      expect(reader.prepare("SELECT name FROM sqlite_master WHERE name='workspace_catalog_state'").get()).toBeUndefined();
+    } finally { reader.close(); }
+  });
+
+  it('고정 유휴 v1 자료는 명시 이행 전 보존하고 이행 실패를 전부 되돌린 뒤 재개방한다.', () => {
+    db = new Database(fixture.dbPath);
+    db.pragma('foreign_keys = ON');
+    db.exec(schemaSql);
+    db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+    const ids = seed(true);
+    db.prepare('UPDATE projects SET active_catalog_id=? WHERE id=?').run(ids.catalogId, ids.projectId);
+    const original = db.prepare('SELECT summary_json FROM runs').get();
+    db.close(); db = undefined;
+    expect(() => connectStore(fixture.dbPath)).toThrowError(expect.objectContaining({ code: 'migration-required' }));
+    const originalExec = Database.prototype.exec;
+    const spy = vi.spyOn(Database.prototype, 'exec').mockImplementation(function (this: Database.Database, sql: string) {
+      if (sql === concurrencySql) throw new Error('합성 이행 실패');
+      return originalExec.call(this, sql);
+    });
+    try { expect(() => connectStore(fixture.dbPath, { migrate: true })).toThrow(); }
+    finally { spy.mockRestore(); }
+    const reader = new Database(fixture.dbPath, { readonly: true });
+    try {
+      expect(reader.prepare('SELECT version,checksum FROM schema_migrations').all()).toEqual([{ version: 1, checksum: schemaChecksum }]);
+      expect(reader.prepare('SELECT summary_json FROM runs').get()).toEqual(original);
+      expect(reader.prepare("SELECT name FROM sqlite_master WHERE name='workspace_catalog_state'").get()).toBeUndefined();
+    } finally { reader.close(); }
+    db = connectStore(fixture.dbPath, { migrate: true });
+    expect(db.prepare('SELECT summary_json FROM runs').get()).toEqual(original);
+    expect(db.prepare('SELECT workspace_id,catalog_id FROM workspace_catalog_state').get()).toEqual({ workspace_id: ids.workspaceId, catalog_id: ids.catalogId });
+    expect(db.prepare('SELECT count(*) AS count FROM run_control_owners').get()).toEqual({ count: 0 });
+    db.close(); db = connectStore(fixture.dbPath);
+    expect(db.prepare('SELECT summary_json FROM runs').get()).toEqual(original);
+  });
+
 });
