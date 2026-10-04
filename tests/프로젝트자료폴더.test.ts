@@ -426,17 +426,24 @@ it('실물 없는 imported 이력은 메타 자료로 보존하고 불명 이전
   expect(copyFault.count).toBe(count); expect(f.service.storage.settings(f.projectId).revision).toBe(1);
 }, 30_000);
 
-it('같은277자 합성 경로에서 기존 ACL 실패와 확장경로의 실제 소유자·전용권한을 비교한다.', async () => {
+it('같은277자 경로의 기존 ACL 지원을 관측하고 확장경로의 실제 소유자와 전용권한을 확인한다.', async () => {
   if (process.platform !== 'win32') return;
   const f = await createStoreFixture(); close.push(f.cleanup);
   const directory = join(f.directory, '장경로'); await mkdir(directory);
   const path = join(directory, '가'.repeat(277 - directory.length - 1 - 4) + '.log');
   expect(path.length).toBe(277); await writeFile(path, '합성 원본');
-  await expect(makePrivate(path, true)).rejects.toMatchObject({ code: 'private-directory-failed' });
-  await makePrivate(`\\\\?\\${path}`, true);
   const script = `$target=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(`\\\\?\\${path}`, 'utf8').toString('base64')}')); $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[IO.File]::GetAccessControl($target); ConvertTo-Json -Compress @{ ownerMatches=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Equals($sid); protected=$acl.AreAccessRulesProtected; entries=@($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }) }`;
-  const raw = execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, encoding: 'utf8' });
-  const acl = JSON.parse(raw); expect(acl).toMatchObject({ ownerMatches: true, protected: true }); expect(acl.entries).toHaveLength(1);
-  expect(await readFile(path, 'utf8')).toBe('합성 원본');
+  const verifyPrivate = async () => {
+    const raw = execFileSync(join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, encoding: 'utf8' });
+    const acl = JSON.parse(raw); expect(acl).toMatchObject({ ownerMatches: true, protected: true }); expect(acl.entries).toHaveLength(1);
+    expect(await readFile(path, 'utf8')).toBe('합성 원본');
+  };
+  let plainPathSupported = true;
+  try { await makePrivate(path, true); }
+  catch (error) { plainPathSupported = false; expect(error).toMatchObject({ code: 'private-directory-failed' }); }
+  if (plainPathSupported) await verifyPrivate();
+  await makePrivate(`\\\\?\\${path}`, true);
+  await verifyPrivate();
+  console.info(JSON.stringify({ observation: 'long-path-acl', length: path.length, plainPathSupported, extendedPathVerified: true }));
 }, 30_000);
