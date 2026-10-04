@@ -16,7 +16,7 @@ export function newerVersion(tag, previous) {
 }
 export function releaseNotes(allowUnsigned) {
   return allowUnsigned === 'true'
-    ? '코드 서명되지 않은 Windows x64 설치본입니다. Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 자동 업데이트 확인과 다운로드·재시작 적용 기능을 포함하며 기존 자료 폴더는 유지됩니다. 설치본과 업데이트 패키지의 지문은 SHA256SUMS.txt에서 확인할 수 있습니다. 이번 첫 공개 버전은 공개 버전 간 업데이트 수용을 아직 검증하지 않았습니다. 자동 업데이트가 없는 이전 개발 설치본은 이번 설치본을 직접 설치해야 합니다.'
+    ? '코드 서명되지 않은 Windows x64 설치본입니다. Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 업데이트 확인은 AI 연결 중에도 가능하며 다운로드와 재시작 적용은 별도입니다. 기존 자료 폴더는 유지됩니다. 설치본과 업데이트 패키지의 지문은 SHA256SUMS.txt에서 확인할 수 있습니다. 0.1.0의 최초 전환과 관리형 AI 연결 등록 절차는 저장소의 문서/업데이트와AI연결.md를 확인해 주세요.'
     : '서명과 타임스탬프를 검증한 Windows x64 업데이트입니다. 기존 자료 폴더는 유지됩니다.';
 }
 export async function preparePublicInstaller(directory) {
