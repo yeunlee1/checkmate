@@ -2,16 +2,19 @@
 import { z } from 'zod';
 
 const uuid = z.uuid();
+const workspace = { workspaceId: uuid.optional() };
 const id = z.string().min(1).max(160);
 const pagination = { cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).optional() };
 export const apiInputs = {
   capabilities: z.strictObject({}),
   projects: z.strictObject({ ...pagination }),
   register: z.strictObject({ path: z.string().min(1).max(4096) }),
-  checks: z.strictObject({ projectId: uuid, ...pagination }),
-  inspect: z.strictObject({ projectId: uuid, profile: id }),
+  checks: z.strictObject({ projectId: uuid, ...workspace, ...pagination }),
+  inspect: z.strictObject({ projectId: uuid, ...workspace, profile: id }),
   approve: z.strictObject({ planId: uuid, fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }),
-  start: z.strictObject({ projectId: uuid, planId: uuid }),
+  start: z.strictObject({ projectId: uuid, ...workspace, planId: uuid }),
+  'open-agent-session': z.strictObject({}),
+  'handoff-run': z.strictObject({ runId: uuid, expectedOwnerId: uuid.nullable(), ownerId: uuid, confirm: z.literal(true), note: z.string().trim().min(8).max(500) }),
   status: z.strictObject({ runId: uuid }),
   progress: z.strictObject({ runId: uuid }),
   result: z.strictObject({ runId: uuid, section: z.enum(['summary', 'cases', 'requirements', 'gaps', 'repair-bundle', 'imported']).default('summary'), ...pagination }),
@@ -21,11 +24,11 @@ export const apiInputs = {
   resources: z.strictObject({ runId: uuid, ...pagination }),
   'cleanup-resources': z.strictObject({ runId: uuid, confirm: z.literal(true) }),
   'acknowledge-cleanup': z.strictObject({ runId: uuid, confirm: z.literal(true), note: z.string().trim().min(8).max(500) }),
-  history: z.strictObject({ projectId: uuid, ...pagination }),
-  'import-history': z.strictObject({ projectId: uuid, path: z.string().min(1).max(4096) }),
-  gaps: z.strictObject({ projectId: uuid, ...pagination }),
-  sync: z.strictObject({ projectId: uuid }),
-  activate: z.strictObject({ projectId: uuid, contentHash: z.string().regex(/^[a-f0-9]{64}$/) }),
+  history: z.strictObject({ projectId: uuid, ...workspace, ...pagination }),
+  'import-history': z.strictObject({ projectId: uuid, ...workspace, path: z.string().min(1).max(4096) }),
+  gaps: z.strictObject({ projectId: uuid, ...workspace, ...pagination }),
+  sync: z.strictObject({ projectId: uuid, ...workspace }),
+  activate: z.strictObject({ projectId: uuid, ...workspace, contentHash: z.string().regex(/^[a-f0-9]{64}$/) }),
   backup: z.strictObject({}),
   restore: z.strictObject({ backupDirectory: z.string().min(1).max(4096), targetRoot: z.string().min(1).max(4096), confirm: z.literal(true) }),
 } as const;
@@ -44,7 +47,7 @@ export const apiResponseSchema = z.discriminatedUnion('ok', [
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(true), data: z.json() }),
   z.strictObject({ apiVersion: z.literal(1), requestId: uuid, ok: z.literal(false), error: apiErrorSchema }),
 ]);
-export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources']);
+export const humanMethods = new Set<ApiMethod>(['register', 'approve', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run']);
 
 export class ServiceError extends Error {
   constructor(readonly code: string, message = '요청을 처리할 수 없습니다.', readonly retryable = false, readonly nextAction = '입력과 현재 상태를 확인해 주세요.') {
@@ -61,5 +64,6 @@ export function errorResponse(requestId: string, error: unknown): ApiResponse {
     nextAction: known === 'project-conflict' ? '프로젝트 식별자와 등록 경로를 확인하고 기존 등록을 임의로 교체하지 마세요.' : '검사 목록의 변경을 비교하고 사람이 새 기준을 확인한 뒤 계획을 다시 조회해 주세요.',
   } };
   const allowed = new Set(['invalid-input', 'invalid-project', 'source-unreadable', 'source-too-large', 'source-changed', 'project-not-found', 'plan-stale', 'request-conflict', 'workspace-busy', 'storage-busy', 'storage-error', 'run-not-found', 'invalid-state', 'evidence-not-found', 'evidence-conflict', 'evidence-missing', 'evidence-degraded', 'evidence-restricted', 'unsupported-version', 'schema-mismatch', 'storage-corrupt']);
-  return { apiVersion: 1, requestId, ok: false, error: { code: allowed.has(known) ? known : 'internal-error', message: '요청 처리 중 확인이 필요한 문제가 발생했습니다.', retryable: known === 'storage-busy', nextAction: '입력과 서비스 진단 결과를 확인해 주세요.' } };
+  for (const code of ['workspace-required', 'workspace-not-found', 'run-owner-mismatch', 'migration-required']) allowed.add(code);
+  return { apiVersion: 1, requestId, ok: false, error: { code: allowed.has(known) ? known : 'internal-error', message: '요청 처리 중 확인이 필요한 문제가 발생했습니다.', retryable: known === 'storage-busy', nextAction: known === 'workspace-required' ? 'projects에서 등록된 workspaceId를 확인해 명시해 주세요.' : '입력과 서비스 진단 결과를 확인해 주세요.' } };
 }

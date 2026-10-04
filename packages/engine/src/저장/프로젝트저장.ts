@@ -18,9 +18,9 @@ const scopeSchema = z.strictObject({ planId: z.uuid(), fingerprint: hashSchema,
 
 export type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
-export type CatalogChange = { projectId: string; contentHash: string; active: boolean;
+export type CatalogChange = { projectId: string; workspaceId: string; contentHash: string; active: boolean;
   added: string[]; removed: string[]; changed: string[]; weakened: string[] };
-export type PlanReview = { planId: string; projectId: string; profile: string; fingerprint: string; sourceHash: string;
+export type PlanReview = { planId: string; projectId: string; workspaceId: string; realPath: string; profile: string; fingerprint: string; sourceHash: string;
   checks: { id: string; title: string; required: boolean }[]; commands: ProjectDefinition['commands'];
   writes: string[]; resourceEffects: string[]; needsApproval: boolean };
 
@@ -87,7 +87,7 @@ function selection(source: ProjectSource, profileId: string) {
   return { checks, commands, writes };
 }
 
-function changes(before: ProjectSource, after: ProjectSource): Omit<CatalogChange, 'projectId' | 'contentHash' | 'active'> {
+function changes(before: ProjectSource, after: ProjectSource): Omit<CatalogChange, 'projectId' | 'workspaceId' | 'contentHash' | 'active'> {
   const old = new Map(before.checks.map((item) => [item.id, item]));
   const next = new Map(after.checks.map((item) => [item.id, item]));
   const added = [...next.keys()].filter((id) => !old.has(id)).sort();
@@ -116,10 +116,25 @@ export class ProjectStore {
     return row;
   }
 
-  private workspace(id: string): WorkspaceRow {
-    const rows = this.db.prepare('SELECT * FROM workspaces WHERE project_id = ?').all(id) as WorkspaceRow[];
-    if (rows.length !== 1) throw new ProjectStoreError('storage-error');
+  private workspace(id: string, workspaceId?: string): WorkspaceRow {
+    if (workspaceId !== undefined && !z.uuid().safeParse(workspaceId).success) throw new ProjectStoreError('invalid-input');
+    const rows = this.db.prepare('SELECT * FROM workspaces WHERE project_id = ? AND (? IS NULL OR id=?)')
+      .all(id, workspaceId ?? null, workspaceId ?? null) as WorkspaceRow[];
+    if (rows.length > 1) throw new ProjectStoreError('workspace-required');
+    if (rows.length !== 1) throw new ProjectStoreError('workspace-not-found');
     return rows[0]!;
+  }
+
+  private activeCatalog(workspaceId: string): string {
+    const row = this.db.prepare('SELECT catalog_id FROM workspace_catalog_state WHERE workspace_id=?').get(workspaceId) as { catalog_id: string } | undefined;
+    if (!row) throw new ProjectStoreError('storage-error');
+    return row.catalog_id;
+  }
+
+  private snapshotWorkspace(projectId: string, path: string): WorkspaceRow {
+    const row = this.db.prepare('SELECT * FROM workspaces WHERE project_id=? AND real_path=? COLLATE NOCASE').get(projectId, path) as WorkspaceRow | undefined;
+    if (!row) throw new ProjectStoreError('project-conflict');
+    return row;
   }
 
   private catalog(id: string): { row: CatalogRow; source: ProjectSource } {
@@ -162,35 +177,38 @@ export class ProjectStore {
         if (sameIdentity.some((item) => item.id !== definition.id) || (samePath && samePath.project_id !== definition.id))
           throw new ProjectStoreError('project-conflict');
         if (sameId) {
-          if (sameId.name !== definition.name || sameId.repository_identity !== definition.repositoryIdentity
-            || !samePath || samePath.project_id !== definition.id || this.workspace(definition.id).id !== samePath.id)
+          if (sameId.repository_identity !== definition.repositoryIdentity)
             throw new ProjectStoreError('project-conflict');
-          const active = this.catalog(sameId.active_catalog_id!);
-          if (active.row.content_hash !== value.contentHash || !isDeepStrictEqual(active.source, value.source))
-            throw new ProjectStoreError('catalog-stale');
-          return;
+          if (samePath) {
+            const active = this.catalog(this.activeCatalog(samePath.id));
+            if (active.row.content_hash !== value.contentHash || !isDeepStrictEqual(active.source, value.source))
+              throw new ProjectStoreError('catalog-stale');
+            return;
+          }
+        } else {
+          this.db.prepare('INSERT INTO projects (id,name,repository_identity,active_catalog_id,created_at) VALUES (?,?,?,NULL,?)')
+            .run(definition.id, definition.name, definition.repositoryIdentity, new Date().toISOString());
         }
-        this.db.prepare('INSERT INTO projects (id,name,repository_identity,active_catalog_id,created_at) VALUES (?,?,?,NULL,?)')
-          .run(definition.id, definition.name, definition.repositoryIdentity, new Date().toISOString());
+        const workspaceId = randomUUID();
         this.db.prepare('INSERT INTO workspaces (id,project_id,real_path,path_fingerprint,created_at) VALUES (?,?,?,?,?)')
-          .run(randomUUID(), definition.id, value.realPath, sha256(value.realPath), new Date().toISOString());
+          .run(workspaceId, definition.id, value.realPath, sha256(value.realPath), new Date().toISOString());
         const catalog = this.saveCatalog(definition.id, value.source, value.contentHash);
-        this.db.prepare('UPDATE projects SET active_catalog_id = ? WHERE id = ?').run(catalog.id, definition.id);
+        this.db.prepare('INSERT INTO workspace_catalog_state (workspace_id,catalog_id) VALUES (?,?)').run(workspaceId, catalog.id);
+        this.db.prepare('UPDATE projects SET active_catalog_id = ? WHERE id = ? AND active_catalog_id IS NULL').run(catalog.id, definition.id);
       })();
-      return this.get(definition.id);
+      return this.get(definition.id, this.snapshotWorkspace(definition.id, value.realPath).id);
     } catch (error) { fail(error); }
   }
 
-  get(projectId: string): ProjectInfo {
+  get(projectId: string, workspaceId?: string): ProjectInfo {
     try {
       const project = this.project(projectId);
-      const workspace = this.workspace(projectId);
-      if (!project.active_catalog_id) throw new ProjectStoreError('storage-error');
-      const { row, source } = this.catalog(project.active_catalog_id);
+      const workspace = this.workspace(projectId, workspaceId);
+      const { row, source } = this.catalog(this.activeCatalog(workspace.id));
       if (row.project_id !== projectId || source.project.id !== projectId
-        || source.project.name !== project.name || source.project.repositoryIdentity !== project.repository_identity)
+        || source.project.repositoryIdentity !== project.repository_identity)
         throw new ProjectStoreError('storage-error');
-      return { id: project.id, name: project.name, repositoryIdentity: project.repository_identity,
+      return { id: project.id, name: source.project.name, repositoryIdentity: project.repository_identity,
         workspaceId: workspace.id, realPath: workspace.real_path, activeCatalogHash: row.content_hash,
         profiles: source.project.profiles.map(({ id, title }) => ({ id, title })) };
     } catch (error) { fail(error); }
@@ -198,8 +216,8 @@ export class ProjectStore {
 
   list(): ProjectInfo[] {
     try {
-      const ids = this.db.prepare('SELECT id FROM projects ORDER BY id').all() as { id: string }[];
-      return ids.map(({ id }) => this.get(id));
+      const ids = this.db.prepare('SELECT project_id,id FROM workspaces ORDER BY project_id,id').all() as { project_id: string; id: string }[];
+      return ids.map(({ project_id, id }) => this.get(project_id, id));
     } catch (error) { fail(error); }
   }
 
@@ -210,19 +228,17 @@ export class ProjectStore {
     try {
       return this.db.transaction(() => {
         const project = this.project(projectId);
-        if (project.repository_identity !== value.source.project.repositoryIdentity
-          || this.workspace(projectId).real_path !== value.realPath) throw new ProjectStoreError('project-conflict');
-        if (!project.active_catalog_id) throw new ProjectStoreError('storage-error');
-        const previous = this.catalog(project.active_catalog_id);
+        if (project.repository_identity !== value.source.project.repositoryIdentity) throw new ProjectStoreError('project-conflict');
+        const workspace = this.snapshotWorkspace(projectId, value.realPath);
+        const previous = this.catalog(this.activeCatalog(workspace.id));
         const diff = changes(previous.source, value.source);
         const candidate = this.saveCatalog(projectId, value.source, value.contentHash);
         if (activate && candidate.id !== previous.row.id) {
-          this.db.prepare('UPDATE projects SET active_catalog_id = ?, name = ? WHERE id = ?')
-            .run(candidate.id, value.source.project.name, projectId);
-          this.audit('catalog-activated', projectId, previous.row.content_hash, value.contentHash, null,
-            { catalogId: candidate.id });
+          this.db.prepare('UPDATE workspace_catalog_state SET catalog_id=? WHERE workspace_id=?').run(candidate.id, workspace.id);
+          this.audit('catalog-activated', workspace.id, previous.row.content_hash, value.contentHash, null,
+            { catalogId: candidate.id, projectId, workspaceId: workspace.id });
         }
-        return { projectId, contentHash: value.contentHash,
+        return { projectId, workspaceId: workspace.id, contentHash: value.contentHash,
           active: activate || candidate.id === previous.row.id, ...diff };
       })();
     } catch (error) { fail(error); }
@@ -243,22 +259,21 @@ export class ProjectStore {
     try {
       const plan = this.db.transaction(() => {
         const project = this.project(projectId);
-        const workspace = this.workspace(projectId);
+        const workspace = this.snapshotWorkspace(projectId, value.realPath);
         if (workspace.real_path !== value.realPath || project.repository_identity !== value.source.project.repositoryIdentity)
           throw new ProjectStoreError('project-conflict');
-        if (!project.active_catalog_id) throw new ProjectStoreError('storage-error');
-        const catalog = this.catalog(project.active_catalog_id);
+        const catalog = this.catalog(this.activeCatalog(workspace.id));
         if (catalog.row.content_hash !== value.contentHash || !isDeepStrictEqual(catalog.source, value.source))
           throw new ProjectStoreError('catalog-stale');
         const selected = selection(catalog.source, profileId);
-        const fingerprint = sha256(canonical({ projectId, realPath: workspace.real_path,
+        const fingerprint = sha256(canonical({ projectId, workspaceId: workspace.id, realPath: workspace.real_path,
           catalogHash: catalog.row.content_hash, sourceHash: value.sourceHash, profileId,
           checks: selected.checks, commands: selected.commands, node: process.version }));
         const old = this.db.prepare('SELECT * FROM plans WHERE workspace_id = ? AND catalog_id = ? AND fingerprint = ? ORDER BY created_at, id LIMIT 1')
           .get(workspace.id, catalog.row.id, fingerprint) as PlanRow | undefined;
         const planId = old?.id ?? randomUUID();
         const registration: PlanRegistration = {
-          project: { id: projectId, name: project.name, repositoryIdentity: project.repository_identity },
+          project: { id: projectId, name: catalog.source.project.name, repositoryIdentity: project.repository_identity },
           workspace: { id: workspace.id, realPath: workspace.real_path, pathFingerprint: workspace.path_fingerprint },
           catalog: { id: catalog.row.id, contentHash: catalog.row.content_hash,
             source: z.record(z.string(), z.json()).parse(JSON.parse(JSON.stringify(catalog.source))) },
@@ -275,7 +290,7 @@ export class ProjectStore {
             || !isDeepStrictEqual(stored.plan, registration.plan))
             throw new ProjectStoreError('storage-error');
         } else this.runs.registerPlan(registration);
-        return { planId, projectId, profile: profileId, fingerprint, sourceHash: value.sourceHash,
+        return { planId, projectId, workspaceId: workspace.id, realPath: workspace.real_path, profile: profileId, fingerprint, sourceHash: value.sourceHash,
           checks: selected.checks.map(({ id, title, required }) => ({ id, title, required })),
           commands: selected.commands, writes: selected.writes,
           resourceEffects: [...new Set(selected.commands.flatMap(command => command.resources ?? []))].flatMap(kind => [
@@ -298,14 +313,14 @@ export class ProjectStore {
       || registration.workspace.id !== row.workspace_id || registration.catalog.id !== row.catalog_id)
       throw new ProjectStoreError('storage-error');
     const project = this.project(registration.project.id);
-    if (this.workspace(project.id).id !== row.workspace_id) throw new ProjectStoreError('storage-error');
+    if (this.workspace(project.id, row.workspace_id).id !== registration.workspace.id) throw new ProjectStoreError('storage-error');
     const catalog = this.catalog(row.catalog_id);
     if (catalog.row.project_id !== project.id || catalog.row.content_hash !== registration.catalog.contentHash
       || !isDeepStrictEqual(catalog.source, registration.catalog.source)) throw new ProjectStoreError('storage-error');
     const selected = selection(catalog.source, registration.plan.profile);
     const scope: ApprovalScope = { planId, fingerprint: registration.plan.fingerprint,
       sourceHash: registration.plan.sourceHash, writes: selected.writes, commands: selected.commands };
-    return { row, project, registration, scope, active: project.active_catalog_id === row.catalog_id };
+    return { row, project, registration, scope, active: this.activeCatalog(row.workspace_id) === row.catalog_id };
   }
 
   private approval(planId: string, scope: ApprovalScope): string | null {

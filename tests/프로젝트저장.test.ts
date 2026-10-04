@@ -70,7 +70,11 @@ test('등록 재사용과 ID, 경로, 저장소 식별자 및 이름 충돌을 �
   expect(store.list()).toEqual([info]);
   const otherPath = join(files.directory, '다른경로');
   await mkdir(otherPath);
-  expect(() => store.register(snapshot(otherPath, source))).toThrowError(expect.objectContaining({ code: 'project-conflict' }));
+  const other = store.register(snapshot(otherPath, source));
+  expect(other.workspaceId).not.toBe(info.workspaceId);
+  expect(store.get(source.project.id, info.workspaceId)).toEqual(info);
+  expect(store.get(source.project.id, other.workspaceId)).toEqual(other);
+  expect(() => store.get(source.project.id)).toThrowError(expect.objectContaining({ code: 'workspace-required' }));
   expect(() => store.register(snapshot(otherPath, { ...source,
     project: { ...source.project, id: randomUUID() } })))
     .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
@@ -79,7 +83,7 @@ test('등록 재사용과 ID, 경로, 저장소 식별자 및 이름 충돌을 �
     .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
   expect(() => store.register(snapshot(files.directory, { ...source,
     project: { ...source.project, name: '무단 변경' } })))
-    .toThrowError(expect.objectContaining({ code: 'project-conflict' }));
+    .toThrowError(expect.objectContaining({ code: 'catalog-stale' }));
   expect((db.prepare('SELECT count(*) AS count FROM projects').get() as { count: number }).count).toBe(1);
 });
 

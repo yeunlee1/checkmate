@@ -154,3 +154,22 @@ test('감사 삽입 오류는 계획과 실행까지 되돌리고 접수 중인 
   expect(runs.getRun(admission.runId)).toEqual(before);
   expect(runs.listRuns(registration.project.id).runs).toHaveLength(2);
 });
+
+
+test('같은 repository의 두 workspace는 과거 보고서 dedup과 이력을 각각 유지하며 생략은 거절한다.', async () => {
+  const { files, db, runs, registration, path } = await fixture();
+  const otherFolder = join(files.directory, '다른작업공간'); await mkdir(otherFolder);
+  const other: PlanRegistration = { ...registration,
+    workspace: { ...registration.workspace, id: randomUUID(), realPath: otherFolder, pathFingerprint: 'f'.repeat(64) },
+    plan: { ...registration.plan, id: randomUUID() } };
+  runs.registerPlan(other);
+  await expect(importHistory(db, registration.project.id, path)).rejects.toMatchObject({ code: 'workspace-required' });
+  const first = await importHistory(db, registration.project.id, path, registration.workspace.id);
+  const second = await importHistory(db, registration.project.id, path, other.workspace.id);
+  expect(second.runId).not.toBe(first.runId); expect(second.reused).toBe(false);
+  expect(await importHistory(db, registration.project.id, path, registration.workspace.id)).toMatchObject({ runId: first.runId, reused: true });
+  expect(runs.listRuns(registration.project.id, 20, undefined, registration.workspace.id).runs.map(run => run.runId)).toEqual([first.runId]);
+  expect(runs.listRuns(registration.project.id, 20, undefined, other.workspace.id).runs.map(run => run.runId)).toEqual([second.runId]);
+  expect(runs.getRun(first.runId)?.verdict).toBe('unknown');
+  expect(getImportedHistory(db, first.runId)?.originalSha256).toBe(getImportedHistory(db, second.runId)?.originalSha256);
+});

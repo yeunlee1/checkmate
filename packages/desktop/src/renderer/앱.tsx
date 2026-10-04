@@ -28,16 +28,16 @@ type ProjectInfo = { id: string; name: string; repositoryIdentity: string; works
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
 type CheckInfo = { id: string; title: string; requirementId: string; required: boolean; kind: string; expected: string; codePaths: string[] };
 type Command = { id: string; title: string; runtime: string; entry: string; args: string[]; timeoutMs: number;
-  env: Record<string, string>; writes: string[]; resultFormat: string; resources?: string[] };
-type PlanReview = { planId: string; projectId: string; profile: string; fingerprint: string; sourceHash: string;
+  env: Record<string, string>; writes: string[]; resultFormat: string; resources?: string[]; exclusiveResources?: string[] };
+type PlanReview = { planId: string; projectId: string; workspaceId?: string; profile: string; fingerprint: string; sourceHash: string;
   checks: { id: string; title: string; required: boolean }[]; commands: Command[]; writes: string[]; resourceEffects: string[]; needsApproval: boolean };
-type CatalogChange = { projectId: string; contentHash: string; active: boolean; added: string[]; removed: string[];
+type CatalogChange = { projectId: string; workspaceId: string; contentHash: string; active: boolean; added: string[]; removed: string[];
   changed: string[]; weakened: string[] };
 type CaseInfo = { testId: string; status: string; requirementId: string | null; expected: string | null;
   observed: string | null; evidenceIds: string[]; severity: string; location: { file: string; line: number } | null; truncated?: boolean };
 type RequirementInfo = { requirementId: string; title: string; status: string; checks: string[]; selectedChecks: string[];
   outsideChecks: string[]; missingChecks: string[]; evidenceIds: string[]; codePaths: string[]; reasons: string[] };
-type Summary = { runId: string; projectId: string; profile: string; origin: 'live' | 'imported'; state: string; verdict: string | null;
+type Summary = { runId: string; projectId: string; workspaceId?: string; planId?: string; ownerId?: string | null; profile: string; origin: 'live' | 'imported'; state: string; verdict: string | null;
   effectiveVerdict: string | null; finalized: boolean; integrity: 'verified' | 'degraded' | 'pending';
   reusablePassed: boolean; planned: number; required: number; counts: Record<string, number>; reasons: string[];
   failures: CaseInfo[]; workerExitCode: number | null; environmentVerified: boolean | null;
@@ -100,6 +100,31 @@ function label(map: Translations, key: string | null | undefined, fallback?: str
 
 class RequestFailure extends Error {
   constructor(readonly code: string, message: string, readonly nextAction: string) { super(message); }
+}
+
+export function guiSupports(data: unknown, feature: string): boolean {
+  return typeof data === 'object' && data !== null && 'capabilities' in data
+    && Array.isArray(data.capabilities) && data.capabilities.every(value => typeof value === 'string') && data.capabilities.includes(feature);
+}
+
+type SelectionPage = Page<Pick<ProjectInfo, 'id' | 'workspaceId'>>;
+export function guiProjectInput(data: unknown, page: SelectionPage, id: string, workspace: string): { projectId: string; workspaceId?: string } {
+  if (typeof data !== 'object' || data === null || !('capabilities' in data) || !Array.isArray(data.capabilities)
+    || !data.capabilities.every(value => typeof value === 'string') || !workspace
+    || !page.items.some(item => item.id === id && item.workspaceId === workspace))
+    throw new RequestFailure('service-update-required', '서비스 기능과 선택한 작업 폴더를 확인해 주세요.', '연결과 등록 대상을 다시 확인하세요.');
+  if (guiSupports(data, 'multi-workspace')) return { projectId: id, workspaceId: workspace };
+  if (page.nextCursor !== null || page.total !== page.items.length || page.items.filter(item => item.id === id).length !== 1)
+    throw new RequestFailure('service-update-required', '구 서비스에서 작업 폴더 하나를 확정할 수 없습니다.', '등록 대상을 확인하거나 유휴 상태에서 서비스를 갱신하세요.');
+  return { projectId: id };
+}
+
+export function guiWorkspaceMatches(data: unknown, page: SelectionPage, id: string, workspace: string, result: { projectId: string; workspaceId?: string }): boolean {
+  try {
+    const scope = guiProjectInput(data, page, id, workspace);
+    return result.projectId === id && (scope.workspaceId !== undefined ? result.workspaceId === workspace
+      : result.workspaceId === undefined || result.workspaceId === workspace);
+  } catch { return false; }
 }
 
 async function request<T>(method: ApiMethod, input: Record<string, unknown> = {}, requestId?: string): Promise<T> {
@@ -197,6 +222,10 @@ export function App() {
   const [projectCursor, setProjectCursor] = useState<string | null>(null);
   const [projectTotal, setProjectTotal] = useState(0);
   const [projectId, setProjectId] = useState('');
+  const [workspaceId, setWorkspaceId] = useState('');
+  const [handoffOwner, setHandoffOwner] = useState('');
+  const [handoffNote, setHandoffNote] = useState('');
+  const [handoffConsent, setHandoffConsent] = useState(false);
   const [profileId, setProfileId] = useState('');
   const [plan, setPlan] = useState<PlanReview | null>(null);
   const [consent, setConsent] = useState(false);
@@ -244,6 +273,8 @@ export function App() {
   useEffect(() => { setCleanupConsent(false); setCleanupNote(''); setCleanupAcknowledged(''); }, [runId]);
   const [needsInitialization, setNeedsInitialization] = useState(false);
   const [serviceReady, setServiceReady] = useState(false);
+  const [capabilities, setCapabilities] = useState<unknown>(null);
+  const capabilitiesRef = useRef<unknown>(null);
   const [busy, setBusy] = useState('');
   const [loading, setLoading] = useState(true);
   const [notice, setNoticeValue] = useState<[string, string] | null>(null);
@@ -252,9 +283,19 @@ export function App() {
   const selectedProjectRef = useRef('');
   const selectedRunRef = useRef('');
   const busyRef = useRef(false);
-  const project = projects.find((item) => item.id === projectId) ?? null;
+  const project = projects.find((item) => item.workspaceId === workspaceId) ?? null;
   function setNotice(korean: string, english = korean) { setNoticeError(null); setNoticeValue(korean ? [korean, english] : null); }
   function showError(error: unknown) { setNoticeValue(null); setNoticeError(error); }
+  const selectionPage = { items: projects, nextCursor: projectCursor, total: projectTotal };
+  const projectInput = (id: string, workspace: string) => guiProjectInput(capabilitiesRef.current, selectionPage, id, workspace);
+  const matchesProject = (result: { projectId: string; workspaceId?: string }, id: string, workspace: string) =>
+    guiWorkspaceMatches(capabilitiesRef.current, selectionPage, id, workspace, result);
+  async function readCapabilities() {
+    capabilitiesRef.current = null; setCapabilities(null); setServiceReady(false);
+    setPlan(null); setConsent(false); setSummary(null); setProgress(null); setHandoffConsent(false);
+    const value = await request<unknown>('capabilities');
+    capabilitiesRef.current = value; setCapabilities(value);
+  }
   const phaseLabels: Translations = { queued: ['대기 중', 'Queued'], preparing: ['실행 준비 중', 'Preparing'], running: ['검사 실행 중', 'Running checks'],
     verifying: ['결과 확인 중', 'Verifying results'], cleaning: ['자원 정리 중', 'Cleaning up'], finished: ['실행 종료', 'Finished'], unavailable: ['진행 진단 미확인', 'Progress diagnostics unavailable'] };
 
@@ -265,29 +306,35 @@ export function App() {
     setProjectTotal(result.total);
   }
   async function loadChecks(id: string, cursor?: string) {
-    const result = await request<Page<CheckInfo>>('checks', { projectId: id, ...(cursor ? { cursor } : {}) });
-    if (selectedProjectRef.current !== id) return;
+    const workspace = selectedProjectRef.current, capturedCapabilities = capabilitiesRef.current;
+    const result = await request<Page<CheckInfo>>('checks', { ...projectInput(id, workspace), ...(cursor ? { cursor } : {}) });
+    if (selectedProjectRef.current !== workspace || capabilitiesRef.current !== capturedCapabilities) return;
     setChecks((previous) => cursor ? [...previous, ...result.items] : result.items);
     setChecksCursor(result.nextCursor); setChecksTotal(result.total);
   }
   async function loadHistory(id: string, cursor?: string) {
+    const workspace = selectedProjectRef.current, capturedCapabilities = capabilitiesRef.current;
     if (!cursor) setHistoryLoading(true);
     try {
-      const result = await request<{ items: HistoryItem[]; nextCursor: string | null }>('history', { projectId: id, ...(cursor ? { cursor } : {}) });
-      if (selectedProjectRef.current !== id) return;
+      const result = await request<{ items: HistoryItem[]; nextCursor: string | null }>('history', { ...projectInput(id, workspace), ...(cursor ? { cursor } : {}) });
+      if (selectedProjectRef.current !== workspace || capabilitiesRef.current !== capturedCapabilities) return;
       setHistory((previous) => cursor ? [...previous, ...result.items] : result.items);
       setHistoryCursor(result.nextCursor);
-    } finally { if (selectedProjectRef.current === id) setHistoryLoading(false); }
+    } finally { if (selectedProjectRef.current === workspace) setHistoryLoading(false); }
   }
   async function loadProjectGaps(id: string, cursor?: string) {
-    const result = await request<Page<Gap>>('gaps', { projectId: id, ...(cursor ? { cursor } : {}) });
-    if (selectedProjectRef.current !== id) return;
+    const workspace = selectedProjectRef.current, capturedCapabilities = capabilitiesRef.current;
+    const result = await request<Page<Gap>>('gaps', { ...projectInput(id, workspace), ...(cursor ? { cursor } : {}) });
+    if (selectedProjectRef.current !== workspace || capabilitiesRef.current !== capturedCapabilities) return;
     setGaps((previous) => cursor ? [...previous, ...result.items] : result.items);
     setGapsCursor(result.nextCursor); setGapsTotal(result.total);
   }
   async function loadSummary(id: string) {
+    const workspace = selectedProjectRef.current, capturedCapabilities = capabilitiesRef.current;
+    projectInput(projectId, workspace);
     const result = await request<Summary>('result', { runId: id, section: 'summary' });
-    if (selectedRunRef.current === id && selectedProjectRef.current === result.projectId) setSummary(result);
+    if (selectedRunRef.current === id && result.runId === id && selectedProjectRef.current === workspace
+      && capabilitiesRef.current === capturedCapabilities && matchesProject(result, projectId, workspace)) setSummary(result);
     return result;
   }
   async function action(label: string, work: () => Promise<void>) {
@@ -303,7 +350,7 @@ export function App() {
     let active = true;
     void (async () => {
       try {
-        await request('capabilities');
+        await readCapabilities();
         const info = await window.checkmate!.connectionInfo();
         if (active) setConnection(info);
         const result = await request<Page<ProjectInfo>>('projects');
@@ -321,13 +368,16 @@ export function App() {
   }, [connected]);
 
   useEffect(() => {
-    if (!connected || page !== 'history' || !runId) return;
+    if (!connected || !serviceReady || page !== 'history' || !runId) return;
     let active = true;
     let timer: number | undefined;
     async function tick() {
       try {
+        const workspace = selectedProjectRef.current, capturedCapabilities = capabilitiesRef.current;
+        projectInput(projectId, workspace);
         const result = await request<Summary>('result', { runId, section: 'summary' });
-        if (!active || selectedRunRef.current !== runId || selectedProjectRef.current !== result.projectId) return;
+        if (!active || selectedRunRef.current !== runId || result.runId !== runId || selectedProjectRef.current !== workspace
+          || capabilitiesRef.current !== capturedCapabilities || !matchesProject(result, projectId, workspace)) return;
         setSummary(result);
         try {
           const current = await request<RunProgress>('progress', { runId });
@@ -346,41 +396,43 @@ export function App() {
     }
     void tick();
     return () => { active = false; if (timer !== undefined) window.clearTimeout(timer); };
-  }, [connected, page, runId, projectId]);
+  }, [connected, serviceReady, page, runId, projectId, workspaceId, capabilities, projects, projectCursor, projectTotal]);
 
-  function selectProject(id: string) {
+  function selectProject(id: string, registered?: ProjectInfo) {
+    const selected = registered ?? projects.find(item => item.workspaceId === id);
+    const selectedId = selected?.id ?? '';
     selectedProjectRef.current = id;
     selectedRunRef.current = '';
-    setProjectId(id); setProfileId(''); setPlan(null); setConsent(false); setCatalogChange(null);
+    setProjectId(selectedId); setWorkspaceId(id); setHandoffOwner(''); setHandoffNote(''); setHandoffConsent(false); setProfileId(''); setPlan(null); setConsent(false); setCatalogChange(null);
     setChecks([]); setHistory([]); setGaps([]); setRunId(''); setSummary(null); setProgress(null);
     setCases([]); setRequirements([]); setRunGaps([]); setRepairItems([]); setImportedReport(null);
     setEvidence(null); setEvidenceText(''); setEvidenceImage(null); setNotice('');
     setChecksCursor(null); setHistoryCursor(null); setGapsCursor(null);
     startRequestId.current = null;
     if (!id) return;
-    void loadHistory(id).catch((error: unknown) => { if (selectedProjectRef.current === id) showError(error); });
-    void loadChecks(id).catch((error: unknown) => { if (selectedProjectRef.current === id) showError(error); });
+    void loadHistory(selectedId).catch((error: unknown) => { if (selectedProjectRef.current === id) showError(error); });
+    void loadChecks(selectedId).catch((error: unknown) => { if (selectedProjectRef.current === id) showError(error); });
   }
   function navigate(next: PageName) {
     setPage(next); setNotice('');
     if (!projectId) return;
-    if (next === 'checks') void loadChecks(projectId).catch((error: unknown) => { if (selectedProjectRef.current === projectId) showError(error); });
-    if (next === 'history') void loadHistory(projectId).catch((error: unknown) => { if (selectedProjectRef.current === projectId) showError(error); });
-    if (next === 'gaps') void loadProjectGaps(projectId).catch((error: unknown) => { if (selectedProjectRef.current === projectId) showError(error); });
+    if (next === 'checks') void loadChecks(projectId).catch((error: unknown) => { if (selectedProjectRef.current === workspaceId) showError(error); });
+    if (next === 'history') void loadHistory(projectId).catch((error: unknown) => { if (selectedProjectRef.current === workspaceId) showError(error); });
+    if (next === 'gaps') void loadProjectGaps(projectId).catch((error: unknown) => { if (selectedProjectRef.current === workspaceId) showError(error); });
   }
   async function addProject() {
     await action('register', async () => {
       const path = await window.checkmate!.chooseDirectory();
       if (!path) return;
       const added = await request<ProjectInfo>('register', { path });
-      await loadProjects(); selectProject(added.id);
+      await loadProjects(); selectProject(added.workspaceId, added);
        setNotice('프로젝트를 등록했습니다. 실행 전 계획과 명령 범위를 확인해 주세요.', 'Project added. Review the plan and command scope before running.');
     });
   }
   async function initialize() {
     await action('initialize', async () => {
       await window.checkmate!.initializeLocalStore();
-      await request('capabilities');
+      await readCapabilities();
       setConnection(await window.checkmate!.connectionInfo());
       await loadProjects();
       setNeedsInitialization(false); setServiceReady(true);
@@ -389,7 +441,7 @@ export function App() {
   }
   async function retryConnection() {
     await action('connection-retry', async () => {
-      try { await request('capabilities'); }
+      try { await readCapabilities(); }
       catch (error) {
         if (error instanceof RequestFailure && error.code === 'needs-initialization') setNeedsInitialization(true);
         throw error;
@@ -424,19 +476,24 @@ export function App() {
   async function inspect() {
     if (!project || !profileId) return;
     const inspectedProjectId = project.id;
+    const inspectedWorkspaceId = project.workspaceId;
     const inspectedProfileId = profileId;
     await action('inspect', async () => {
-      const result = await request<PlanReview>('inspect', { projectId: inspectedProjectId, profile: inspectedProfileId });
-      if (selectedProjectRef.current !== inspectedProjectId || result.projectId !== inspectedProjectId) return;
+      const capturedCapabilities = capabilitiesRef.current;
+      const result = await request<PlanReview>('inspect', { ...projectInput(inspectedProjectId, inspectedWorkspaceId), profile: inspectedProfileId });
+      if (selectedProjectRef.current !== inspectedWorkspaceId || capabilitiesRef.current !== capturedCapabilities
+        || !matchesProject(result, inspectedProjectId, inspectedWorkspaceId)) return;
       setPlan(result); setConsent(false); startRequestId.current = null;
     });
   }
   async function approve() {
     if (!plan || !consent) return;
     const reviewedPlan = plan;
+    const reviewedWorkspaceId = selectedProjectRef.current;
     await action('approve', async () => {
+      if (!matchesProject(reviewedPlan, projectId, reviewedWorkspaceId)) throw new RequestFailure('service-update-required', '계획의 작업 폴더를 확인해 주세요.', '계획을 다시 확인하세요.');
       await request<{ approvalId: string }>('approve', { planId: reviewedPlan.planId, fingerprint: reviewedPlan.fingerprint });
-      if (selectedProjectRef.current !== reviewedPlan.projectId) return;
+      if (selectedProjectRef.current !== reviewedWorkspaceId) return;
       setPlan((current) => current?.planId === reviewedPlan.planId ? { ...current, needsApproval: false } : current);
        setNotice('이 계획의 명령과 쓰기 범위를 승인했습니다. 실행은 별도로 시작해야 합니다.', 'Command and write scopes approved. Start the run separately.');
     });
@@ -444,14 +501,17 @@ export function App() {
   async function start() {
     if (!project || !plan || plan.needsApproval || !consent) return;
     const startedProjectId = project.id;
+    const startedWorkspaceId = project.workspaceId;
     const startedPlanId = plan.planId;
     await action('start', async () => {
+      if (!matchesProject(plan, startedProjectId, startedWorkspaceId)) throw new RequestFailure('service-update-required', '계획의 작업 폴더를 확인해 주세요.', '계획을 다시 확인하세요.');
       startRequestId.current ??= crypto.randomUUID();
       const accepted = await request<{ runId: string; reused: boolean }>('start',
-        { projectId: startedProjectId, planId: startedPlanId }, startRequestId.current);
+        { ...projectInput(startedProjectId, startedWorkspaceId), planId: startedPlanId }, startRequestId.current);
       startRequestId.current = null;
-      if (selectedProjectRef.current !== startedProjectId) return;
+      if (selectedProjectRef.current !== startedWorkspaceId) return;
       selectedRunRef.current = accepted.runId;
+      setHandoffOwner(''); setHandoffNote(''); setHandoffConsent(false);
       setRunId(accepted.runId); setSummary(null); setProgress(null); setCancelRequested(false); setResultTab('summary');
       setEvidence(null); setEvidenceText(''); setEvidenceCursor(null); setEvidenceImage(null);
       setCases([]); setRequirements([]); setRunGaps([]); setRepairItems([]); setImportedReport(null);
@@ -463,18 +523,19 @@ export function App() {
   }
   async function sync() {
     if (!project) return;
-    await action('sync', async () => { const change = await request<CatalogChange>('sync', { projectId: project.id });
+    await action('sync', async () => { const change = await request<CatalogChange>('sync', projectInput(project.id, project.workspaceId));
       setCatalogChange(change); setActivateConsent(false); });
   }
   async function activate() {
     if (!project || !catalogChange || !activateConsent || catalogChange.active) return;
     await action('activate', async () => {
-      await request<CatalogChange>('activate', { projectId: project.id, contentHash: catalogChange.contentHash });
+      await request<CatalogChange>('activate', { ...projectInput(project.id, project.workspaceId), contentHash: catalogChange.contentHash });
       setCatalogChange(null); setActivateConsent(false); setPlan(null); setConsent(false); startRequestId.current = null;
        await loadProjects(); setNotice('변경된 카탈로그를 활성화했습니다. 새 계획을 확인해 주세요.', 'Changed catalog activated. Review a new plan.');
     });
   }
   async function openRun(id: string) {
+    setHandoffOwner(''); setHandoffNote(''); setHandoffConsent(false);
     selectedRunRef.current = id;
     setRunId(id); setSummary(null); setProgress(null); setResultTab('summary'); setEvidence(null); setCancelRequested(false);
     setCases([]); setRequirements([]); setRunGaps([]); setRepairItems([]); setImportedReport(null);
@@ -590,7 +651,7 @@ export function App() {
     <main id="main" className="main-content" tabIndex={-1}>
       <header className="topbar"><div><p className="eyebrow">CHECKMATE</p><h1>{title}</h1></div>
         <div className="top-actions"><label className="top-control">{text('언어', 'Language')}<select data-testid="language-select" aria-label={text('화면 언어', 'Display language')} value={language} onChange={(event) => setLanguage(event.target.value === 'en' ? 'en' : 'ko')}><option value="ko">한국어</option><option value="en">English</option></select></label>
-          {serviceReady && <label className="top-control project-switch">{text('선택 프로젝트', 'Selected project')}<select data-testid="project-select" aria-label={text('프로젝트 선택', 'Choose project')} value={projectId} onChange={(event) => selectProject(event.target.value)} disabled={!!busy}><option value="">{text('프로젝트 선택', 'Choose a project')}</option>{projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
+          {serviceReady && <label className="top-control project-switch">{text('선택 프로젝트', 'Selected project')}<select data-testid="project-select" aria-label={text('프로젝트 선택', 'Choose project')} value={workspaceId} onChange={(event) => selectProject(event.target.value)} disabled={!!busy}><option value="">{text('프로젝트 선택', 'Choose a project')}</option>{projects.map((item) => <option key={item.workspaceId} value={item.workspaceId}>{item.name} · {item.realPath}</option>)}</select></label>}
           {page === 'projects' && serviceReady && <button data-testid="add-project" className="primary" type="button" onClick={() => void addProject()} disabled={!!busy}>{text('+ 프로젝트 추가', '+ Add project')}</button>}</div></header>
       <div className="content-wrap">
         {serviceReady && <ol className="workflow" aria-label={text('검사 진행 단계', 'Check workflow')}>
@@ -617,8 +678,8 @@ export function App() {
              <section className="section-head"><div><p className="eyebrow">STEP 1</p><h2>{text('검사할 프로젝트를 선택하세요', 'Choose a project to check')}</h2><p>{text('목록에서 프로젝트를 고르거나 새 프로젝트 폴더를 추가하세요.', 'Select a project below or add a new project folder.')}</p></div>
                <button type="button" className="secondary" onClick={() => void action('refresh', () => loadProjects())} disabled={!!busy}>{text('새로 고침', 'Refresh')}</button></section>
              {projects.length === 0 ? <Empty title={text('등록된 프로젝트가 없습니다', 'No projects yet')} body={text('프로젝트 폴더를 선택해 검사 원본을 등록하세요. 등록만으로 명령이 실행되지는 않습니다.', 'Add a project folder to load its checks. Adding it does not run commands.')} />
-               : <><div className="project-grid">{projects.map((item) => <button className={item.id === projectId ? 'project-tile selected' : 'project-tile'}
-                 type="button" key={item.id} onClick={() => selectProject(item.id)} aria-pressed={item.id === projectId} disabled={!!busy}>
+               : <><div className="project-grid">{projects.map((item) => <button className={item.workspaceId === workspaceId ? 'project-tile selected' : 'project-tile'}
+                 type="button" key={item.workspaceId} onClick={() => selectProject(item.workspaceId)} aria-pressed={item.workspaceId === workspaceId} disabled={!!busy}>
                  <span className="tile-kicker">{text('프로젝트', 'PROJECT')}</span><strong>{item.name}</strong><span className="tile-path">{item.realPath}</span>
                  <span className="tile-bottom">{text(`검사 묶음 ${item.profiles.length}개`, `${item.profiles.length} check sets`)} <span aria-hidden="true">↗</span></span></button>)}</div>
                  <p className="page-count">{projects.length} / {projectTotal}</p>{projectCursor && <button type="button" className="secondary" onClick={() => void action('more-projects', () => loadProjects(projectCursor))} disabled={!!busy}>{text('프로젝트 더 보기', 'Show more projects')}</button>}</>}
@@ -636,6 +697,7 @@ export function App() {
                  <div className="approval-scope"><h4>{text('승인할 실행 범위', 'Execution scope to approve')}</h4><p>{text('명령, 환경 값, 파일 쓰기, 시험 자원을 확인한 뒤 체크하세요.', 'Review commands, environment values, file writes, and test resources before checking the box.')}</p>
                    <div className="subsection"><h4>{text('실행 명령과 환경', 'Commands and environment')}</h4>{plan.commands.map((command) => <div className="command-card" key={command.id}><strong>{command.title}</strong>
                    <details className="technical-detail" open={plan.needsApproval}><summary>{text('정확한 명령과 환경 값 보기', 'Show exact command and environment')}</summary><p><code>{command.runtime} {command.entry} {command.args.join(' ')}</code></p><p className="muted">{text('시간 제한', 'Timeout')} {Math.round(command.timeoutMs / 1000)}{text('초', 's')} · {text('결과 형식', 'Result format')} {command.resultFormat}</p>
+                   {command.exclusiveResources?.length ? <p>{text('공유 자원 잠금', 'Shared resource locks')} <code>{command.exclusiveResources.join(', ')}</code></p> : null}
                    <div className="env-list">{Object.entries(command.env).length === 0 ? text('추가 환경 값 없음', 'No extra environment values') : Object.entries(command.env).map(([key, value]) => <code key={key}>{key}={value}</code>)}</div></details></div>)}</div>
                    <div className="subsection"><h4>{text('허용된 쓰기 경로', 'Allowed write paths')}</h4>{plan.writes.length === 0 ? <p className="muted">{text('선언된 쓰기 경로가 없습니다.', 'No write paths declared.')}</p> : <ul className="compact-list">{plan.writes.map((path) => <li key={path}><code>{path}</code></li>)}</ul>}</div>
                    {plan.resourceEffects?.length > 0 && <div className="subsection"><h4>{text('시험 자원 생성과 제거', 'Test resource creation and removal')}</h4>{plan.resourceEffects.map(effect => <p key={effect}>{resourceEffectText(effect)}</p>)}</div>}
@@ -689,6 +751,19 @@ export function App() {
                 const saved = response.data as { path?: string };
                 if (saved.path) setNotice(`보고서를 저장했습니다. ${saved.path}`, `Report saved to ${saved.path}`);
               })}>{text('HTML 보고서 저장', 'Save HTML report')}</button> : <button type="button" className="danger-button" onClick={() => void cancel()} disabled={!!busy || cancelRequested}>{cancelRequested ? text('취소 요청됨 · 종료 확인 중', 'Cancellation requested · Waiting for exit') : text('실행 취소 요청', 'Request cancellation')}</button>}</div>
+              {!summary.finalized && guiSupports(capabilities, 'run-handoff') && summary.ownerId !== undefined && <details className="technical-detail"><summary>{text('실행 제어권 인계', 'Hand over run control')}</summary>
+                <p>{text('실행과 작업 폴더, 기존 소유자 및 대상의 공개 ownerId를 확인하세요.', 'Review this run, workspace, current owner, and the target public ownerId.')}</p>
+                <p className="path-line">{project?.realPath}</p><p>{text('현재 소유자', 'Current owner')} · {summary.ownerId ?? text('사람 제어', 'Human control')}</p>
+                <label className="field">{text('대상 ownerId', 'Target ownerId')}<input value={handoffOwner} onChange={event => { setHandoffOwner(event.target.value); setHandoffConsent(false); }} disabled={!!busy} /></label>
+                <label className="field">{text('인계 확인 근거', 'Handoff review note')}<input value={handoffNote} maxLength={500} onChange={event => { setHandoffNote(event.target.value); setHandoffConsent(false); }} disabled={!!busy} /></label>
+                <label className="checkline"><input type="checkbox" checked={handoffConsent} onChange={event => setHandoffConsent(event.target.checked)} disabled={!!busy} />{text('이 실행을 선택한 소유자에게 인계합니다.', 'Hand this run over to the selected owner.')}</label>
+                <button type="button" className="secondary" disabled={!!busy || !handoffConsent || !handoffOwner || handoffNote.trim().length < 8} onClick={() => void action('handoff', async () => {
+                  const selectedRun = runId;
+                  if (!guiSupports(capabilitiesRef.current, 'run-handoff')) throw new RequestFailure('service-update-required', '서비스가 제어권 인계를 지원하지 않습니다.', '유휴 상태에서 서비스를 갱신하세요.');
+                  await request('handoff-run', { runId: selectedRun, expectedOwnerId: summary.ownerId, ownerId: handoffOwner, confirm: true, note: handoffNote });
+                  setHandoffConsent(false); await loadSummary(selectedRun);
+                })}>{text('제어권 인계 확인', 'Confirm handoff')}</button>
+              </details>}
               {!summary.finalized && <div className="progress-summary" data-testid="run-progress" role="status"><strong>{progress ? label(phaseLabels, progress.phase) : text('진행 상태 확인 중', 'Checking progress')}</strong>
                 <p>{text('검사 묶음', 'Check set')} · {<RecordedProfile id={summary.profile} project={project} />}</p>
                 {progress?.available && progress.totalCommands > 0 && <p>{text(`명령 작업 ${progress.completedCommands} / ${progress.totalCommands}개 완료`, `${progress.completedCommands} of ${progress.totalCommands} command tasks complete`)}</p>}
@@ -778,7 +853,7 @@ export function App() {
             {project && <div className="detail-actions"><button type="button" className="secondary" onClick={() => void action('import', async () => {
               const path = await window.checkmate!.chooseReport();
               if (!path) return;
-              const saved = await request<{ runId: string }>('import-history', { projectId: project.id, path });
+              const saved = await request<{ runId: string }>('import-history', { ...projectInput(project.id, project.workspaceId), path });
               await loadHistory(project.id); await openRun(saved.runId);
               setNotice('과거 보고서를 가져왔습니다. 원래 상태는 보존하며 현재 판정은 미확인입니다.', 'Past report imported. Its original state is preserved; the current verdict remains unconfirmed.');
             })} disabled={!!busy}>{text('과거 보고서 가져오기', 'Import past report')}</button><button type="button" className="secondary" onClick={() => void action('refresh-history', () => loadHistory(project.id))} disabled={!!busy}>{text('새로 고침', 'Refresh')}</button></div>}</div>

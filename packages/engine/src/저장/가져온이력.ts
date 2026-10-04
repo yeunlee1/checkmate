@@ -20,7 +20,7 @@ type HistoryRow = { origin: string; detail_json: string };
 
 export type ImportHistoryResult = { runId: string; reused: boolean; report: AtelierImportedReport };
 export type ImportHistoryErrorCode = 'invalid-input' | 'invalid-file' | 'file-too-large' | 'file-changed'
-  | 'invalid-report' | 'project-not-found' | 'storage-busy' | 'storage-error';
+  | 'invalid-report' | 'project-not-found' | 'storage-busy' | 'storage-error' | 'workspace-required';
 
 export class ImportHistoryError extends Error {
   constructor(public readonly code: ImportHistoryErrorCode, message: string) {
@@ -99,12 +99,14 @@ async function readReport(path: string): Promise<AtelierImportedReport> {
   }
 }
 
-function context(db: Database.Database, projectId: string): Context {
-  const rows = db.prepare(`SELECT p.id AS project_id, p.name, p.repository_identity, p.active_catalog_id,
+function context(db: Database.Database, projectId: string, workspaceId?: string): Context {
+  const rows = db.prepare(`SELECT p.id AS project_id, p.name, p.repository_identity, a.catalog_id AS active_catalog_id,
     w.id AS workspace_id, w.real_path, w.path_fingerprint, c.content_hash, c.source_json
     FROM projects p JOIN workspaces w ON w.project_id = p.id
-    LEFT JOIN catalogs c ON c.id = p.active_catalog_id WHERE p.id = ?`).all(projectId) as Context[];
+    LEFT JOIN workspace_catalog_state a ON a.workspace_id=w.id
+    LEFT JOIN catalogs c ON c.id=a.catalog_id WHERE p.id=? AND (? IS NULL OR w.id=?)`).all(projectId, workspaceId ?? null, workspaceId ?? null) as Context[];
   if (rows.length === 0) throw new ImportHistoryError('project-not-found', '등록된 프로젝트를 찾을 수 없습니다.');
+  if (rows.length > 1) throw new ImportHistoryError('workspace-required', 'workspaceId로 가져올 작업 폴더를 지정해 주세요.');
   if (rows.length !== 1 || !rows[0]!.active_catalog_id || !rows[0]!.content_hash)
     throw new ImportHistoryError('storage-error', '프로젝트의 활성 원본을 확인할 수 없습니다.');
   return rows[0]!;
@@ -122,18 +124,18 @@ function storedReport(row: HistoryRow, originalSha256?: string): AtelierImported
   throw new ImportHistoryError('storage-error', '가져온 이력의 요약을 확인할 수 없습니다.');
 }
 
-export async function importHistory(db: Database.Database, projectId: string, reportPath: string): Promise<ImportHistoryResult> {
+export async function importHistory(db: Database.Database, projectId: string, reportPath: string, workspaceId?: string): Promise<ImportHistoryResult> {
   if (!uuid.safeParse(projectId).success)
     throw new ImportHistoryError('invalid-input', '프로젝트 ID가 올바르지 않습니다.');
-  try { context(db, projectId); } catch (error) { fail(error); }
+  try { context(db, projectId, workspaceId); } catch (error) { fail(error); }
   const report = await readReport(reportPath);
   try {
     return db.transaction(() => {
-      const current = context(db, projectId);
+      const current = context(db, projectId, workspaceId);
       const previous = db.prepare(`SELECT r.id AS run_id, r.origin, a.detail_json FROM audit_events a
         JOIN runs r ON r.id = a.entity_id JOIN workspaces w ON w.id = r.workspace_id
-        WHERE w.project_id = ? AND a.action = 'history-imported' AND a.after_hash = ?
-        ORDER BY a.recorded_at, a.id LIMIT 1`).get(projectId, report.originalSha256) as
+        WHERE w.project_id = ? AND w.id=? AND a.action = 'history-imported' AND a.after_hash = ?
+        ORDER BY a.recorded_at, a.id LIMIT 1`).get(projectId, current.workspace_id, report.originalSha256) as
         (HistoryRow & { run_id: string }) | undefined;
       if (previous) return { runId: previous.run_id, reused: true, report: storedReport(previous, report.originalSha256) };
 

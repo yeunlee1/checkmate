@@ -35,6 +35,8 @@ const commandSchema = z.strictObject({
     }
   }),
   writes: z.array(relativePath).max(100),
+  exclusiveResources: z.array(z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/u)).max(100)
+    .refine(values => new Set(values.map(value => value.toLowerCase())).size === values.length, '공유 자원 키가 중복되었습니다.').optional(),
   resultFormat: z.enum(['ndjson', 'exit-code']),
   resources: z.array(databaseResourceKindSchema).max(databaseResourceKinds.length)
     .refine(values => new Set(values).size === values.length, '시험 DB 종류가 중복되었습니다.').optional(),

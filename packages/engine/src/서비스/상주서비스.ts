@@ -19,7 +19,7 @@ import { ProductService } from './제품서비스.js';
 import { assertInstallationAvailable } from '../연결/업데이트잠금.js';
 
 const ownerSchema = z.strictObject({ id: z.uuid(), pid: z.number().int().positive(), startedAt: z.iso.datetime() });
-async function acquire(paths: DataPaths): Promise<() => Promise<void>> {
+export async function acquireServiceOwnership(paths: DataPaths): Promise<() => Promise<void>> {
   const lock = join(paths.runtime, '서비스소유.json');
   await rejectLinks(lock);
   const readOwner = async () => {
@@ -57,18 +57,19 @@ async function acquire(paths: DataPaths): Promise<() => Promise<void>> {
   };
 }
 
-export async function startLocalService(root?: string, idleMs = 60000): Promise<{ close: () => Promise<void>; product: ProductService; paths: DataPaths }> {
+export async function startLocalService(root?: string, idleMs = 60000, options: { lockRoot?: string } = {}): Promise<{ close: () => Promise<void>; product: ProductService; paths: DataPaths }> {
   await assertInstallationAvailable();
   const paths = dataPaths(root);
   await prepareDataPaths(paths);
-  const release = await acquire(paths);
+  const release = await acquireServiceOwnership(paths);
   let db;
   try {
     db = connectStore(join(paths.state, 'checkmate.sqlite'));
     const evidence = new EvidenceStore(db, paths.runs);
     const events = new EventStore(db);
     const resources = new DatabaseResources(new ResourceStore(db));
-    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events, resources }), paths, resources);
+    const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events, resources }), paths, resources, options);
+    await product.locks.prepare();
     for (const row of db.prepare("SELECT id FROM runs WHERE state IN ('queued','running')").all() as { id: string }[]) {
       const old = product.runs.getRun(row.id)!;
       const queued = old.state === 'queued';
@@ -81,7 +82,7 @@ export async function startLocalService(root?: string, idleMs = 60000): Promise<
           JSON.stringify({ previousState: old.state, reason: 'service-restarted', recovery: queued ? '작업 시작 전 중단돼 정리할 실행 자원이 없습니다.' : '종료와 정리를 직접 확인하지 못했습니다.' }));
     }
     let touched = Date.now();
-    const endpoint = await serveLocal(paths, async (request, role) => { touched = Date.now(); return product.handle(request, role); });
+    const endpoint = await serveLocal(paths, async (request, role, context) => { touched = Date.now(); return product.handle(request, role, context); }, product.sessions);
     let closing: Promise<void> | undefined;
     const database = db;
     const close = (): Promise<void> => {

@@ -6,7 +6,7 @@ import { assessResult, resultInputSchema, runResultSchema } from '@checkmate/con
 import type { RunResult } from '@checkmate/contracts';
 import { projectSourceSchema } from '@checkmate/contracts/project';
 import { RunStoreError } from '@checkmate/contracts/runs';
-import type { AdmissionResult, PlanRegistration, RunProgress, RunStore } from '@checkmate/contracts/runs';
+import type { Admission, AdmissionResult, PlanRegistration, RunProgress, RunStore } from '@checkmate/contracts/runs';
 
 export type ProgressUpdate = Pick<RunProgress, 'phase' | 'currentCommand' | 'completedCommands' | 'totalCommands' | 'available'>;
 export type RunExecutor = (plan: PlanRegistration, initialResult: RunResult, signal: AbortSignal,
@@ -27,14 +27,22 @@ export class RunService {
   private readonly queue: { runId: string; planId: string; local: LocalRun }[] = [];
   private readonly local = new Map<string, LocalRun>();
 
-  constructor(private readonly store: RunStore, private readonly executor: RunExecutor) {}
+  constructor(private readonly store: RunStore, private readonly executor: RunExecutor,
+    private readonly preflight?: (plan: PlanRegistration, runId: string) => Promise<void>) {}
 
-  start(input: { projectId: string; planId: string; requestId: string }): AdmissionResult {
-    const parsed = z.strictObject({ projectId: z.uuid(), planId: z.uuid(), requestId: z.uuid() }).safeParse(input);
+  start(input: { projectId: string; planId: string; requestId: string; workspaceId?: string | undefined }, control: {
+    owner?: Admission['owner']; lease?: Admission['lease']; runId?: string; guard?: () => void;
+  } = {}): AdmissionResult {
+    const parsed = z.strictObject({ projectId: z.uuid(), planId: z.uuid(), requestId: z.uuid(), workspaceId: z.uuid().optional() }).safeParse(input);
     if (!parsed.success) throw new RunStoreError('invalid-input');
     const { projectId, planId, requestId } = parsed.data;
-    const requestHash = createHash('sha256').update(JSON.stringify([projectId, planId, requestId])).digest('hex');
-    const admitted = this.store.admitRun({ projectId, planId, requestId, requestHash, runId: randomUUID(), createdAt: new Date().toISOString() });
+    const plan = this.store.getPlan(planId);
+    if (!plan || plan.project.id !== projectId || (parsed.data.workspaceId !== undefined && parsed.data.workspaceId !== plan.workspace.id)) throw new RunStoreError('plan-stale');
+    const requestHash = createHash('sha256').update(JSON.stringify(control.owner
+      ? ['start', projectId, plan.workspace.id, planId, plan.plan.fingerprint]
+      : [projectId, planId, requestId])).digest('hex');
+    const admitted = this.store.admitRun({ projectId, planId, requestId, requestHash, runId: control.runId ?? randomUUID(), createdAt: new Date().toISOString(),
+      ...(control.owner ? { owner: control.owner } : {}), ...(control.lease ? { lease: control.lease } : {}) }, control.guard);
     if (!admitted.reused && !this.local.has(admitted.runId)) {
       let resolve!: (result: RunResult) => void;
       let reject!: (error: unknown) => void;
@@ -116,7 +124,6 @@ export class RunService {
   }
 
   private async execute(runId: string, planId: string, local: LocalRun): Promise<RunResult> {
-    local.started = true;
     const initial = this.store.getRun(runId);
     if (!initial) throw new RunStoreError('run-not-found');
     if (initial.finalized) return initial;
@@ -124,6 +131,12 @@ export class RunService {
     if (local.cancelled) return this.store.finalizeRun(this.finish(initial, 'cancelled'));
     const plan = this.store.getPlan(planId);
     if (!plan || plan.plan.id !== planId || plan.project.id !== initial.projectId) throw new RunStoreError('plan-stale');
+    try { if (this.preflight) await this.preflight(plan, runId); }
+    catch { return this.store.finalizeRun(this.finish({ ...initial, cleanupVerified: true }, 'blocked')); }
+    const current = this.store.getRun(runId);
+    if (current?.finalized) return current;
+    if (local.cancelled) return this.store.finalizeRun(this.finish(initial, 'cancelled'));
+    local.started = true;
     const source = projectSourceSchema.safeParse(plan.catalog.source);
     const selectedIds = new Set(source.success ? source.data.checks
       .filter((check) => plan.plan.plannedChecks.includes(check.id)).map((check) => check.commandId) : []);

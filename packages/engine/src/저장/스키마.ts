@@ -239,3 +239,46 @@ export const schemaTables = [
   'requirement_checks', 'plans', 'approvals', 'runs', 'requests', 'steps',
   'case_results', 'evidence', 'gaps', 'resources', 'events', 'audit_events',
 ] as const;
+
+// 버전 1 SQL과 체크섬은 보존하며 동시사용 자료만 별도 이행으로 추가한다.
+export const concurrencySql = `
+CREATE TABLE workspace_catalog_state (
+  workspace_id TEXT NOT NULL PRIMARY KEY REFERENCES workspaces(id) ON DELETE RESTRICT,
+  catalog_id TEXT NOT NULL REFERENCES catalogs(id) ON DELETE RESTRICT
+);
+CREATE TRIGGER workspace_catalog_same_project_insert BEFORE INSERT ON workspace_catalog_state BEGIN
+  SELECT RAISE(ABORT, 'workspace-catalog-mismatch') WHERE
+    (SELECT project_id FROM workspaces WHERE id=NEW.workspace_id) IS NOT
+    (SELECT project_id FROM catalogs WHERE id=NEW.catalog_id);
+END;
+CREATE TRIGGER workspace_catalog_same_project_update BEFORE UPDATE ON workspace_catalog_state BEGIN
+  SELECT RAISE(ABORT, 'workspace-catalog-mismatch') WHERE
+    (SELECT project_id FROM workspaces WHERE id=NEW.workspace_id) IS NOT
+    (SELECT project_id FROM catalogs WHERE id=NEW.catalog_id);
+END;
+INSERT INTO workspace_catalog_state SELECT w.id,p.active_catalog_id FROM workspaces w
+  JOIN projects p ON p.id=w.project_id WHERE p.active_catalog_id IS NOT NULL;
+CREATE TABLE run_control_owners (
+  run_id TEXT NOT NULL PRIMARY KEY REFERENCES runs(id) ON DELETE RESTRICT,
+  owner_id TEXT NOT NULL CHECK (${uuid('owner_id')}),
+  owner_hash TEXT NOT NULL CHECK (${hash('owner_hash')}),
+  service_epoch TEXT NOT NULL CHECK (${uuid('service_epoch')}),
+  revision INTEGER NOT NULL CHECK (typeof(revision)='integer' AND revision>0)
+);
+CREATE TABLE owner_requests (
+  owner_id TEXT NOT NULL CHECK (${uuid('owner_id')}),
+  request_id TEXT NOT NULL CHECK (${uuid('request_id')}),
+  request_hash TEXT NOT NULL CHECK (${hash('request_hash')}),
+  run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE RESTRICT,
+  PRIMARY KEY (owner_id,request_id)
+) WITHOUT ROWID;
+CREATE TABLE execution_locks (
+  run_id TEXT NOT NULL PRIMARY KEY REFERENCES runs(id) ON DELETE RESTRICT,
+  lease_json TEXT NOT NULL CHECK (${json('lease_json')})
+);
+`;
+export const concurrencyChecksum = createHash('sha256').update(concurrencySql, 'utf8').digest('hex');
+export const currentSchemaVersion = 2;
+export const currentSchemaTables = [...schemaTables, 'workspace_catalog_state', 'run_control_owners', 'owner_requests', 'execution_locks'] as const;
+export const storeMigrations = [{ version: schemaVersion, checksum: schemaChecksum, sql: schemaSql },
+  { version: currentSchemaVersion, checksum: concurrencyChecksum, sql: concurrencySql }] as const;

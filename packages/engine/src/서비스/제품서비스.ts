@@ -1,7 +1,7 @@
 // 프로젝트 등록과 승인된 실행 및 결과 조회를 모든 입구에 공통으로 제공한다.
 import { createHash, randomUUID } from 'node:crypto';
 import { engineVersion } from '../버전.js';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { apiInputs, errorResponse, humanMethods, ServiceError } from '@checkmate/contracts/api';
 import type { ApiRequest, ApiResponse } from '@checkmate/contracts/api';
@@ -23,10 +23,17 @@ import { getImportedHistory, importHistory, ImportHistoryError } from '../저장
 import { ResourceStore } from '../저장/자원저장.js';
 import type { DatabaseResources } from '../자원/격리데이터베이스.js';
 import { databaseResourceKinds } from '@checkmate/contracts/resources';
+import { SessionControl } from '../연결/세션제어.js';
+import type { CallerContext } from '../연결/세션제어.js';
+import type { PlanRegistration } from '@checkmate/contracts/runs';
+import { SharedLocks, defaultSharedLockRoot, executionLockKeys } from '../연결/공유잠금.js';
+import type { Lease } from '../연결/공유잠금.js';
 
-const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources']);
+const mutations = new Set(['register', 'inspect', 'approve', 'start', 'cancel', 'sync', 'activate', 'backup', 'restore', 'import-history', 'acknowledge-cleanup', 'cleanup-resources', 'handoff-run']);
 
 export class ProductService {
+  readonly sessions = new SessionControl();
+  readonly locks: SharedLocks;
   readonly projects: ProjectStore;
   readonly runs: SQLiteRunStore;
   readonly execution: RunService;
@@ -38,24 +45,28 @@ export class ProductService {
   readonly resources: ResourceStore;
 
   constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths,
-    private readonly resourceController?: Pick<DatabaseResources, 'cleanup'>) {
+    private readonly resourceController?: Pick<DatabaseResources, 'cleanup'>, options: { lockRoot?: string } = {}) {
+    this.locks = new SharedLocks(options.lockRoot ?? (paths ? defaultSharedLockRoot() : join(dirname(db.name), '공유잠금')), paths?.root ?? dirname(db.name));
     this.projects = new ProjectStore(db);
     this.runs = new SQLiteRunStore(db);
-    this.execution = new RunService(this.runs, executor);
+    this.execution = new RunService(this.runs, executor, (plan, runId) => this.preflight(plan, runId));
     this.resources = new ResourceStore(db);
   }
   get active(): boolean { return this.pending.size > 0 || this.maintenance || this.writing > 0; }
 
-  async handle(request: ApiRequest, role: ClientRole): Promise<ApiResponse> {
+  async handle(request: ApiRequest, role: ClientRole, context?: CallerContext): Promise<ApiResponse> {
     let writing = false;
     try {
       if (role === 'agent' && humanMethods.has(request.method)) throw new ServiceError('human-action-required');
+      if (role === 'agent' && ['start', 'cancel'].includes(request.method)) this.sessions.assert(context);
       if (mutations.has(request.method)) {
         if (this.storageFailure) throw new ServiceError('storage-error', '저장 상태를 확인하기 전에는 새 작업을 접수할 수 없습니다.');
         if (this.maintenance) throw new ServiceError('maintenance-busy', '자료 백업 또는 복구가 진행 중입니다.', true);
         this.writing += 1; writing = true;
       }
-      const data = await this.dispatch(request);
+      const payload = await this.dispatch(request, role, context);
+      const data = request.method === 'result' && typeof request.input.runId === 'string' && typeof payload === 'object' && payload !== null
+        ? { ...payload, ...this.runs.metadata(request.input.runId) } : payload;
       return { apiVersion: 1, requestId: request.requestId, ok: true, data };
     } catch (error) { return errorResponse(request.requestId, error instanceof ImportHistoryError
       ? new ServiceError(error.code, error.message) : error instanceof BackupError
@@ -63,14 +74,17 @@ export class ProductService {
     finally { if (writing) this.writing -= 1; }
   }
 
-  private async dispatch(request: ApiRequest): Promise<unknown> {
+  private async dispatch(request: ApiRequest, role: ClientRole, context?: CallerContext): Promise<unknown> {
     const raw = request.input;
     switch (request.method) {
       case 'capabilities':
         apiInputs.capabilities.parse(raw);
         return { version: engineVersion, apiVersion: 1, node: process.versions.node, storageHealthy: !this.storageFailure,
           connection: this.paths ? { dataRoot: this.paths.root } : null,
-          capabilities: ['projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images'],
+          ...(role === 'human' ? { controlOwners: this.sessions.list() } : {}),
+          agentSession: context ? { ownerId: context.ownerId, serviceEpoch: context.serviceEpoch } : null,
+          coordination: { lockRoot: this.locks.root, scope: 'same-host-user-and-lock-root', undeclaredResourcesProtected: false },
+          capabilities: ['shared-resource-locks', 'multi-workspace', 'agent-run-control', 'run-handoff', 'projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images'],
           databaseResources: databaseResourceKinds,
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
@@ -78,20 +92,31 @@ export class ProductService {
         const input = apiInputs.projects.parse(raw);
         return boundedPage(this.projects.list(), 'projects', input.cursor, input.limit);
       }
+      case 'open-agent-session': {
+        apiInputs['open-agent-session'].parse(raw);
+        if (role !== 'agent') throw new ServiceError('invalid-input');
+        return this.sessions.open();
+      }
+      case 'handoff-run': {
+        const input = apiInputs['handoff-run'].parse(raw);
+        const run = this.requireRun(input.runId);
+        if (run.origin !== 'live' || run.finalized) throw new ServiceError('invalid-state');
+        return { runId: input.runId, ...this.runs.handoff(input.runId, input.expectedOwnerId, this.sessions.find(input.ownerId), input.note) };
+      }
       case 'register': {
         const input = apiInputs.register.parse(raw);
         return this.projects.register(await readProjectSource(input.path));
       }
       case 'checks': {
         const input = apiInputs.checks.parse(raw);
-        const project = this.projects.get(input.projectId);
+        const project = this.projects.get(input.projectId, input.workspaceId);
         const row = this.db.prepare('SELECT source_json FROM catalogs WHERE project_id = ? AND content_hash = ?').get(input.projectId, project.activeCatalogHash) as { source_json: string };
         const source = projectSourceSchema.parse(JSON.parse(row.source_json));
-        return boundedPage(source.checks, `checks:${input.projectId}:${project.activeCatalogHash}`, input.cursor, input.limit);
+        return boundedPage(source.checks, `checks:${input.projectId}:${project.workspaceId}:${project.activeCatalogHash}`, input.cursor, input.limit);
       }
       case 'inspect': {
         const input = apiInputs.inspect.parse(raw);
-        const project = this.projects.get(input.projectId);
+        const project = this.projects.get(input.projectId, input.workspaceId);
         return this.projects.inspect(await readProjectSource(project.realPath), input.profile);
       }
       case 'approve': {
@@ -106,8 +131,15 @@ export class ProductService {
         const input = apiInputs.start.parse(raw);
         const plan = this.runs.getPlan(input.planId);
         if (!plan || plan.project.id !== input.projectId) throw new ServiceError('plan-stale');
-        const previous = this.db.prepare('SELECT run_id FROM requests WHERE workspace_id = ? AND request_id = ?').get(plan.workspace.id, request.requestId);
-        if (previous) return this.execution.start({ ...input, requestId: request.requestId });
+        const target = this.projects.get(input.projectId, input.workspaceId);
+        if (target.workspaceId !== plan.workspace.id) throw new ServiceError('plan-stale');
+        const owner = role === 'agent' ? this.sessions.assert(context) : undefined;
+        const previous = this.db.prepare('SELECT run_id FROM requests WHERE workspace_id = ? AND request_id = ?').get(plan.workspace.id, request.requestId)
+          ?? (owner ? this.db.prepare('SELECT run_id FROM owner_requests WHERE owner_id=? AND request_id=?').get(owner.ownerId, request.requestId) : undefined);
+        if (previous) {
+          const admitted = this.execution.start({ ...input, requestId: request.requestId }, owner ? { owner } : {});
+          return { ...admitted, ...this.runs.metadata(admitted.runId) };
+        }
         if (!this.projects.hasApproval(input.planId)) throw new ServiceError('needs-approval', '이 계획의 명령과 쓰기 범위에 대한 확인이 필요합니다.', false, '사람용 계획 화면 또는 CLI approve에서 정확한 지문을 확인해 주세요.');
         const current = await readProjectSource(plan.workspace.realPath);
         if (current.sourceHash !== plan.plan.sourceHash || current.contentHash !== plan.catalog.contentHash) throw new ServiceError('plan-stale');
@@ -120,25 +152,56 @@ export class ProductService {
           AND NOT EXISTS (SELECT 1 FROM audit_events a WHERE a.entity_id=r.id AND a.action='cleanup-acknowledged' AND a.actor_kind='human') LIMIT 1`).get(plan.workspace.id) as { runId: string } | undefined;
         if (unresolved) throw new ServiceError('ownership-unknown', `이전 실행 ${unresolved.runId}의 프로세스 종료와 정리가 확인되지 않았습니다.`, false,
           `이전 실행 ${unresolved.runId}의 작업자·자손 프로세스 종료와 자원 부재를 사람이 직접 확인하세요. resources=cleaned/verified만으로 프로세스 종료가 확인되지는 않습니다. 확인한 경우에만 같은 자료 폴더의 사람용 CLI에서 acknowledge-cleanup ${unresolved.runId} --confirm --note "실제 확인 근거"를 실행하세요. 기존 판정은 보존됩니다. AI는 사람 확인을 대행하지 마세요.`);
-        const accepted = this.execution.start({ ...input, requestId: request.requestId });
+        await this.locks.prepare();
+        const retry = this.db.prepare('SELECT run_id FROM requests WHERE workspace_id=? AND request_id=?').get(plan.workspace.id, request.requestId)
+          ?? (owner ? this.db.prepare('SELECT run_id FROM owner_requests WHERE owner_id=? AND request_id=?').get(owner.ownerId, request.requestId) : undefined);
+        if (retry) {
+          const admitted = this.execution.start({ ...input, requestId: request.requestId }, owner ? { owner } : {});
+          return { ...admitted, ...this.runs.metadata(admitted.runId) };
+        }
+        const runId = randomUUID();
+        const requestHash = createHash('sha256').update(JSON.stringify(owner
+          ? ['start', input.projectId, plan.workspace.id, input.planId, plan.plan.fingerprint]
+          : [input.projectId, input.planId, request.requestId])).digest('hex');
+        const lease = this.locks.acquire(runId, owner?.ownerId ?? null, requestHash, this.planLockKeys(plan));
+        let accepted: { runId: string; reused: boolean };
+        try {
+          accepted = this.execution.start({ ...input, requestId: request.requestId }, {
+            ...(owner ? { owner } : {}), runId, lease,
+            guard: () => { if (owner) this.sessions.assert(context); if (!this.projects.hasApproval(input.planId)) throw new ServiceError('needs-approval'); },
+          });
+        } catch (error) {
+          const code = error instanceof Error && 'code' in error ? error.code : '';
+          if (['workspace-busy', 'plan-stale', 'request-conflict', 'run-owner-mismatch', 'invalid-input', 'storage-busy', 'needs-approval', 'agent-control-required'].includes(String(code))
+            && !this.db.inTransaction && this.runs.getRun(runId) === null
+            && !this.db.prepare('SELECT 1 FROM requests WHERE run_id=?').get(runId)
+            && !this.db.prepare('SELECT 1 FROM owner_requests WHERE run_id=?').get(runId)
+            && !this.db.prepare('SELECT 1 FROM execution_locks WHERE run_id=?').get(runId)) this.locks.release(lease);
+          throw error;
+        }
+        if (accepted.reused) { this.locks.release(lease); return { ...accepted, ...this.runs.metadata(accepted.runId) }; }
         this.pending.add(accepted.runId);
-        void this.execution.wait(accepted.runId).then((result) => this.recordGaps(result), () => { this.storageFailure = true; })
+        void this.execution.wait(accepted.runId).then(async result => {
+          if (result.cleanupVerified === true && this.resources.list(result.runId).every(item => item.state === 'cleaned')) this.releaseExecutionLock(result.runId);
+          await this.recordGaps(result);
+        }, () => { this.storageFailure = true; })
           .catch(() => { this.storageFailure = true; }).finally(() => this.pending.delete(accepted.runId));
-        return accepted;
+        this.locks.admit(lease);
+        return { ...accepted, ...this.runs.metadata(accepted.runId) };
       }
       case 'status': {
         const input = apiInputs.status.parse(raw);
-        return resultSummary(this.requireRun(input.runId));
+        return { ...resultSummary(this.requireRun(input.runId)), ...this.runs.metadata(input.runId) };
       }
       case 'progress': {
         const input = apiInputs.progress.parse(raw);
-        return this.execution.progress(input.runId);
+        return { ...this.execution.progress(input.runId), ...this.runs.metadata(input.runId) };
       }
       case 'result': {
         const input = apiInputs.result.parse(raw);
         const result = this.requireRun(input.runId);
         const integrity = await this.integrity(result);
-        if (input.section === 'summary') return resultSummary(result, integrity);
+        if (input.section === 'summary') return { ...resultSummary(result, integrity), ...this.runs.metadata(input.runId) };
         if (input.section === 'imported') {
           const imported = getImportedHistory(this.db, result.runId);
           if (!imported) throw new ServiceError('not-imported', '가져온 보고서가 아닙니다.');
@@ -193,25 +256,30 @@ export class ProductService {
       }
       case 'cancel': {
         const input = apiInputs.cancel.parse(raw);
+        if (role === 'agent') this.runs.assertControl(input.runId, this.sessions.assert(context));
         const result = await this.execution.cancel(input.runId);
-        return resultSummary(result);
+        return { ...resultSummary(result), ...this.runs.metadata(input.runId) };
       }
       case 'acknowledge-cleanup': {
         const input = apiInputs['acknowledge-cleanup'].parse(raw);
-        return this.db.transaction(() => {
+        const acknowledged = this.db.transaction(() => {
           const row = this.db.prepare('SELECT workspace_id,summary_json FROM runs WHERE id=?').get(input.runId) as
             { workspace_id: string; summary_json: string } | undefined;
           if (!row) throw new ServiceError('run-not-found');
           const run = this.requireRun(input.runId);
+          const prior = this.db.prepare("SELECT id FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged' AND actor_kind='human' LIMIT 1").get(run.runId);
+          const held = this.checkedExecutionLease(run.runId);
+          const recoveredQueued = run.state === 'blocked' && run.cleanupVerified === true && (held || prior)
+            && !this.db.prepare('SELECT 1 FROM resources WHERE run_id=? LIMIT 1').get(run.runId)
+            && this.db.prepare("SELECT 1 FROM audit_events WHERE entity_id=? AND action='run-recovery-blocked' AND actor_kind='service' AND json_extract(detail_json,'$.previousState')='queued' AND json_extract(detail_json,'$.reason')='service-restarted' LIMIT 1").get(run.runId);
           if (run.origin !== 'live' || !run.finalized || !['blocked', 'unverifiable', 'cancelled'].includes(run.state)
-            || run.cleanupVerified === true) throw new ServiceError('invalid-state', '수동 정리 확인 대상 실행이 아닙니다.');
+            || (run.cleanupVerified === true && !recoveredQueued)) throw new ServiceError('invalid-state', '수동 정리 확인 대상 실행이 아닙니다.');
           const busy = this.db.prepare("SELECT 1 FROM runs WHERE workspace_id=? AND state IN ('queued','running') LIMIT 1")
             .get(row.workspace_id);
           if (busy) throw new ServiceError('workspace-busy', '같은 작업 폴더의 실행이 끝난 뒤 확인해 주세요.');
           if (this.cleaning.has(row.workspace_id) || this.resources.list(run.runId).some(resource => resource.state !== 'cleaned'))
             throw new ServiceError('ownership-unknown', '기록된 시험 DB의 정리를 먼저 확인해 주세요.');
-          const prior = this.db.prepare("SELECT id FROM audit_events WHERE entity_id=? AND action='cleanup-acknowledged' AND actor_kind='human' LIMIT 1")
-            .get(run.runId);
+
           if (prior) return { runId: run.runId, acknowledged: true, reused: true, originalVerdict: run.verdict };
           this.db.prepare(`INSERT INTO audit_events
             (id,action,actor_kind,entity_id,before_hash,after_hash,approval_id,recorded_at,detail_json)
@@ -220,6 +288,8 @@ export class ProductService {
               new Date().toISOString(), JSON.stringify({ note: input.note, manualConfirmation: true }));
           return { runId: run.runId, acknowledged: true, reused: false, originalVerdict: run.verdict };
         })();
+        this.releaseExecutionLock(input.runId);
+        return acknowledged;
       }
       case 'resources': {
         const input = apiInputs.resources.parse(raw);
@@ -248,29 +318,29 @@ export class ProductService {
       }
       case 'history': {
         const input = apiInputs.history.parse(raw);
-        this.projects.get(input.projectId);
-        const page = this.runs.listRuns(input.projectId, Math.min(input.limit ?? 10, 10), input.cursor);
-        return { items: page.runs.map((run) => ({ runId: run.runId, profile: run.profile, origin: run.origin, state: run.state, verdict: run.verdict, finalized: run.finalized })), nextCursor: page.nextCursor };
+        const project = this.projects.get(input.projectId, input.workspaceId);
+        const page = this.runs.listRuns(input.projectId, Math.min(input.limit ?? 10, 10), input.cursor, project.workspaceId);
+        return { items: page.runs.map((run) => ({ runId: run.runId, profile: run.profile, origin: run.origin, state: run.state, verdict: run.verdict, finalized: run.finalized, ...this.runs.metadata(run.runId) })), nextCursor: page.nextCursor };
       }
       case 'import-history': {
         const input = apiInputs['import-history'].parse(raw);
-        const saved = await importHistory(this.db, input.projectId, input.path);
+        const saved = await importHistory(this.db, input.projectId, input.path, this.projects.get(input.projectId, input.workspaceId).workspaceId);
         return { runId: saved.runId, reused: saved.reused, origin: 'imported', effectiveVerdict: 'unknown', reportedStatus: saved.report.reportedStatus,
           originalSha256: saved.report.originalSha256, summary: saved.report.summary, reusablePassed: false };
       }
       case 'gaps': {
         const input = apiInputs.gaps.parse(raw);
-        this.projects.get(input.projectId);
-        const rows = this.db.prepare('SELECT id,requirement_id AS requirementId,opened_run_id AS openedRunId,resolved_run_id AS resolvedRunId,kind,state,detail_json FROM gaps WHERE project_id=? ORDER BY id').all(input.projectId) as { id: string; requirementId: string | null; openedRunId: string; resolvedRunId: string | null; kind: string; state: string; detail_json: string }[];
-        return boundedPage(rows.map(({ detail_json, ...rest }) => ({ ...rest, detail: JSON.parse(detail_json) as unknown })), `project-gaps:${input.projectId}`, input.cursor, input.limit);
+        const project = this.projects.get(input.projectId, input.workspaceId);
+        const rows = this.db.prepare('SELECT g.id,g.requirement_id AS requirementId,g.opened_run_id AS openedRunId,g.resolved_run_id AS resolvedRunId,g.kind,g.state,g.detail_json FROM gaps g JOIN runs r ON r.id=g.opened_run_id WHERE g.project_id=? AND r.workspace_id=? ORDER BY g.id').all(input.projectId, project.workspaceId) as { id: string; requirementId: string | null; openedRunId: string; resolvedRunId: string | null; kind: string; state: string; detail_json: string }[];
+        return boundedPage(rows.map(({ detail_json, ...rest }) => ({ ...rest, detail: JSON.parse(detail_json) as unknown })), `project-gaps:${input.projectId}:${project.workspaceId}`, input.cursor, input.limit);
       }
       case 'sync': {
         const input = apiInputs.sync.parse(raw);
-        return this.projects.sync(await readProjectSource(this.projects.get(input.projectId).realPath));
+        return this.projects.sync(await readProjectSource(this.projects.get(input.projectId, input.workspaceId).realPath));
       }
       case 'activate': {
         const input = apiInputs.activate.parse(raw);
-        const source = await readProjectSource(this.projects.get(input.projectId).realPath);
+        const source = await readProjectSource(this.projects.get(input.projectId, input.workspaceId).realPath);
         if (source.contentHash !== input.contentHash) throw new ServiceError('catalog-stale');
         return this.projects.sync(source, true);
       }
@@ -295,6 +365,41 @@ export class ProductService {
         } finally { this.maintenance = false; }
       }
     }
+  }
+
+  private planLockKeys(plan: PlanRegistration): string[] {
+    const source = projectSourceSchema.parse(plan.catalog.source);
+    const ids = new Set(source.checks.filter(check => plan.plan.plannedChecks.includes(check.id)).map(check => check.commandId));
+    const commands = source.project.commands.filter(command => ids.has(command.id));
+    return executionLockKeys(plan.workspace.realPath, commands.flatMap(command => command.writes), commands.flatMap(command => command.exclusiveResources ?? []));
+  }
+  private checkedExecutionLease(runId: string): { lease: Lease; json: string } | null {
+    const row = this.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(runId) as { lease_json: string } | undefined;
+    if (!row) return null;
+    let lease: Lease;
+    try { lease = JSON.parse(row.lease_json) as Lease; if (!lease || lease.runId !== runId) throw new Error('lease-run'); }
+    catch { throw new ServiceError('lock-ownership-unknown'); }
+    const plan = this.runs.getPlan(this.runs.metadata(runId).planId);
+    if (!plan) throw new ServiceError('lock-ownership-unknown');
+    this.locks.assert(lease, this.planLockKeys(plan));
+    return { lease, json: row.lease_json };
+  }
+  private releaseExecutionLock(runId: string): void {
+    const held = this.checkedExecutionLease(runId);
+    if (!held) return;
+    this.locks.release(held.lease);
+    this.db.prepare('DELETE FROM execution_locks WHERE run_id=? AND lease_json=?').run(runId, held.json);
+  }
+  private async preflight(plan: PlanRegistration, runId: string): Promise<void> {
+    const current = await readProjectSource(plan.workspace.realPath);
+    const normalized = process.platform === 'win32' ? current.realPath.toLowerCase() : current.realPath;
+    if (normalized !== plan.workspace.realPath || current.contentHash !== plan.catalog.contentHash || current.sourceHash !== plan.plan.sourceHash) throw new ServiceError('plan-stale');
+    if (!this.projects.hasApproval(plan.plan.id)) throw new ServiceError('needs-approval');
+    const owner = this.runs.getControl(runId);
+    if (owner) this.runs.assertControl(runId, this.sessions.find(owner.ownerId));
+    const lease = this.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(runId) as { lease_json: string } | undefined;
+    if (!lease) throw new ServiceError('lock-ownership-unknown');
+    this.locks.assert(JSON.parse(lease.lease_json) as Lease, this.planLockKeys(plan));
   }
 
   private requireRun(runId: string): RunResult {
@@ -346,8 +451,8 @@ export class ProductService {
       && run.sourceBefore === run.sourceAfter && run.environmentVerified === true
       && run.evidenceVerified === true && run.cleanupVerified === true && integrity === 'verified';
     this.db.transaction(() => {
-      const open = this.db.prepare("SELECT id,requirement_id,kind,detail_json FROM gaps WHERE project_id=? AND state='open'")
-        .all(run.projectId) as { id: string; requirement_id: string | null; kind: string; detail_json: string }[];
+      const open = this.db.prepare("SELECT g.id,g.requirement_id,g.kind,g.detail_json FROM gaps g JOIN runs r ON r.id=g.opened_run_id JOIN plans p ON p.id=r.plan_id WHERE g.project_id=? AND g.state='open' AND r.workspace_id=? AND p.catalog_id=?")
+        .all(run.projectId, plan.workspace.id, plan.catalog.id) as { id: string; requirement_id: string | null; kind: string; detail_json: string }[];
       for (const gap of gaps) {
         if (open.some(row => row.requirement_id === gap.requirementId && row.kind === gap.kind
           && (JSON.parse(row.detail_json) as { testId?: string | null }).testId === gap.testId)) continue;
