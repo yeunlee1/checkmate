@@ -4,7 +4,9 @@ import type { ApiMethod } from '@checkmate/contracts/api';
 import { databaseResourceNames, type DatabaseResourceKind } from '@checkmate/contracts/resources';
 import { useLanguage, text } from './언어.js';
 
-type Resource = { id: string; kind: DatabaseResourceKind; state: string; descriptor: { name: string; containerId?: string; hostPort?: number };
+type Resource = { id: string; kind: DatabaseResourceKind; state: string; descriptor: { name: string; containerId?: string; hostPort?: number;
+  provider?: 'native'; clusterPath?: string; binaries?: { binaryRoot: string; postgresVersion: string };
+  process?: { pid: number; startedAt: string } };
   cleanup: { verified: boolean; reason: string } | null };
 type Props = { runId: string; canCleanup: boolean; disabled: boolean;
   request: <T>(method: ApiMethod, input: Record<string, unknown>) => Promise<T> };
@@ -81,6 +83,10 @@ export function TestResources({ runId, canCleanup, disabled, request }: Props) {
       'Temporary databases created by this run and their cleanup status.')}</p>
     {items.map(item => <div className="command-card" key={item.id}><strong>{databaseResourceNames[item.kind] ?? item.kind} · {labels[item.state] ?? item.state}</strong>
       <p><code>{item.descriptor.name}</code></p>{item.descriptor.containerId && <p className="path-line">{text('컨테이너', 'Container')} <code>{item.descriptor.containerId}</code></p>}
+      {item.descriptor.provider === 'native' && <><p>{text('네이티브 PostgreSQL', 'Native PostgreSQL')} {item.descriptor.binaries?.postgresVersion}</p>
+        <p className="path-line">{text('등록 실행 파일 폴더', 'Registered binary folder')} <code>{item.descriptor.binaries?.binaryRoot}</code></p>
+        <p className="path-line">{text('전용 합성 클러스터', 'Dedicated synthetic cluster')} <code>{item.descriptor.clusterPath}</code></p>
+        {item.descriptor.process && <p>{text('관측 프로세스', 'Observed process')} {item.descriptor.process.pid} · {item.descriptor.process.startedAt}</p>}</>}
       {item.descriptor.hostPort && <p className="muted">{text('이 컴퓨터의 시험 포트', 'Local test port')} {item.descriptor.hostPort}</p>}
       {item.cleanup?.reason && <p>{item.cleanup.reason}</p>}</div>)}
     {canCleanup && remaining.length > 0 && <><p>{text('이 실행이 만든 시험 DB의 소유권을 다시 확인한 뒤 제거합니다. 안에 있는 합성 자료도 함께 삭제됩니다.',

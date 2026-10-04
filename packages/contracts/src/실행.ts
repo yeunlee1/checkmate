@@ -11,6 +11,8 @@ export const planRegistrationSchema = z.strictObject({
   plan: z.strictObject({
     id: z.uuid(), fingerprint: hash, sourceHash: hash, profile: identifier,
     plannedChecks: z.array(identifier).max(100000), requiredChecks: z.array(identifier).max(100000),
+    nativeResourceRoot: z.string().min(1).max(4096).refine(value => /^(?:[A-Za-z]:[\\/]|\/)/u.test(value)
+      && !/[\x00-\x1f\x7f]/u.test(value), '네이티브 자원의 절대 전용 폴더가 필요합니다.').optional(),
   }),
   createdAt: z.iso.datetime(),
 }).superRefine((value, context) => {

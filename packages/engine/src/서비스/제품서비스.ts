@@ -45,9 +45,9 @@ export class ProductService {
   readonly resources: ResourceStore;
 
   constructor(private readonly db: Database.Database, private readonly evidence: EvidenceStore, executor: RunExecutor, private readonly paths?: DataPaths,
-    private readonly resourceController?: Pick<DatabaseResources, 'cleanup'>, options: { lockRoot?: string } = {}) {
+    private readonly resourceController?: Pick<DatabaseResources, 'cleanup'> & { nativeResourceRoot?: string | undefined }, options: { lockRoot?: string } = {}) {
     this.locks = new SharedLocks(options.lockRoot ?? (paths ? defaultSharedLockRoot() : join(dirname(db.name), '공유잠금')), paths?.root ?? dirname(db.name));
-    this.projects = new ProjectStore(db);
+    this.projects = new ProjectStore(db, resourceController?.nativeResourceRoot);
     this.runs = new SQLiteRunStore(db);
     this.execution = new RunService(this.runs, executor, (plan, runId) => this.preflight(plan, runId));
     this.resources = new ResourceStore(db);
@@ -84,8 +84,12 @@ export class ProductService {
           ...(role === 'human' ? { controlOwners: this.sessions.list() } : {}),
           agentSession: context ? { ownerId: context.ownerId, serviceEpoch: context.serviceEpoch } : null,
           coordination: { lockRoot: this.locks.root, scope: 'same-host-user-and-lock-root', undeclaredResourcesProtected: false },
-          capabilities: ['shared-resource-locks', 'multi-workspace', 'agent-run-control', 'run-handoff', 'projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images'],
+          capabilities: ['shared-resource-locks', 'multi-workspace', 'agent-run-control', 'run-handoff', 'projects', 'plans', 'approval', 'project-runs', 'evidence', 'requirements', 'history', 'mcp', 'backup', 'restore', 'isolated-postgres', 'isolated-mysql', 'isolated-mariadb', 'isolated-mssql', 'isolated-oracle', 'isolated-mongodb', 'resource-recovery', 'public-images',
+            ...(process.platform === 'win32' ? ['native-postgres-resource-provider'] : [])],
           databaseResources: databaseResourceKinds,
+          resourceProviders: { modes: ['docker', ...(process.platform === 'win32' ? ['native'] : [])],
+            nativeHostSupported: process.platform === 'win32', nativeKinds: process.platform === 'win32' ? ['postgres-test'] : [], binaryConfiguration: 'registered-command-only',
+            nativeResourceRoot: this.resourceController?.nativeResourceRoot ?? null, binaryReadiness: 'verified-per-plan-and-before-use' },
           limitations: ['등록된 Node 명령과 선택한 검사 범위만 실행합니다.', '같은 OS 사용자 권한의 악성 코드를 격리하는 샌드박스가 아닙니다.'],
           defaults: { summaryBytes: 8192, evidenceBytes: 32768, maxFailures: 5 } };
       case 'projects': {

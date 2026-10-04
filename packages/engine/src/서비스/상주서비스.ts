@@ -1,6 +1,6 @@
 // 사용자별 단일 SQLite 쓰기 연결을 소유하고 앱 종료 뒤에도 검사를 유지한다.
 import { randomUUID } from 'node:crypto';
-import { lstat, open, readFile, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
@@ -14,6 +14,7 @@ import { EvidenceStore } from '../저장/증거저장.js';
 import { EventStore } from '../저장/이벤트저장.js';
 import { ResourceStore } from '../저장/자원저장.js';
 import { DatabaseResources } from '../자원/격리데이터베이스.js';
+import { NativePostgresResources } from '../자원/네이티브포스트그레스.js';
 import { createProjectExecutor } from './검사실행기.js';
 import { ProductService } from './제품서비스.js';
 import { assertInstallationAvailable } from '../연결/업데이트잠금.js';
@@ -67,7 +68,12 @@ export async function startLocalService(root?: string, idleMs = 60000, options: 
     db = connectStore(join(paths.state, 'checkmate.sqlite'));
     const evidence = new EvidenceStore(db, paths.runs);
     const events = new EventStore(db);
-    const resources = new DatabaseResources(new ResourceStore(db));
+    const resourceRoot = join(paths.root, 'resources');
+    await rejectLinks(resourceRoot);
+    await mkdir(resourceRoot, { recursive: true, mode: 0o700 });
+    await rejectLinks(resourceRoot);
+    const resourceStore = new ResourceStore(db);
+    const resources = new DatabaseResources(resourceStore, undefined, new NativePostgresResources(resourceStore, await realpath(resourceRoot)));
     const product = new ProductService(db, evidence, createProjectExecutor({ runsRoot: paths.runs, evidenceStore: evidence, eventStore: events, resources }), paths, resources, options);
     await product.locks.prepare();
     for (const row of db.prepare("SELECT id FROM runs WHERE state IN ('queued','running')").all() as { id: string }[]) {

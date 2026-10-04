@@ -1,6 +1,7 @@
 // 프로젝트 원본과 계획 및 사람의 승인을 같은 SQLite 저장소에 연결한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { databaseResourceNames } from '@checkmate/contracts/resources';
+import { databaseResourceNames, selectedResourceProvider } from '@checkmate/contracts/resources';
+import { verifyNativePostgresProvider } from '../자원/네이티브포스트그레스.js';
 import { lstatSync, realpathSync } from 'node:fs';
 import { isAbsolute, normalize } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -14,7 +15,8 @@ const hashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const snapshotSchema = z.strictObject({ realPath: z.string(), source: projectSourceSchema,
   contentHash: hashSchema, sourceHash: hashSchema });
 const scopeSchema = z.strictObject({ planId: z.uuid(), fingerprint: hashSchema,
-  sourceHash: hashSchema, writes: z.array(z.string()), commands: z.array(projectSourceSchema.shape.project.shape.commands.element) });
+  sourceHash: hashSchema, writes: z.array(z.string()), commands: z.array(projectSourceSchema.shape.project.shape.commands.element),
+  nativeResourceRoot: z.string().min(1).max(4096).optional() });
 
 export type ProjectInfo = { id: string; name: string; repositoryIdentity: string; workspaceId: string;
   realPath: string; activeCatalogHash: string; profiles: { id: string; title: string }[] };
@@ -22,7 +24,7 @@ export type CatalogChange = { projectId: string; workspaceId: string; contentHas
   added: string[]; removed: string[]; changed: string[]; weakened: string[] };
 export type PlanReview = { planId: string; projectId: string; workspaceId: string; realPath: string; profile: string; fingerprint: string; sourceHash: string;
   checks: { id: string; title: string; required: boolean }[]; commands: ProjectDefinition['commands'];
-  writes: string[]; resourceEffects: string[]; needsApproval: boolean };
+  writes: string[]; resourceEffects: string[]; needsApproval: boolean; nativeResourceRoot?: string };
 
 export class ProjectStoreError extends Error {
   constructor(public readonly code: string) { super('프로젝트 저장 작업을 처리할 수 없습니다.'); }
@@ -66,6 +68,10 @@ function snapshot(input: ProjectSnapshot): ProjectSnapshot {
   const parsed = snapshotSchema.safeParse(input);
   if (!parsed.success || parsed.data.contentHash !== sha256(canonical(parsed.data.source)))
     throw new ProjectStoreError('invalid-input');
+  try {
+    for (const command of parsed.data.source.project.commands)
+      if (command.resourceProvider?.mode === 'native') verifyNativePostgresProvider(command.resourceProvider);
+  } catch { throw new ProjectStoreError('invalid-input'); }
   return { ...parsed.data, realPath: realProjectPath(parsed.data.realPath) };
 }
 
@@ -107,7 +113,7 @@ function changes(before: ProjectSource, after: ProjectSource): Omit<CatalogChang
 
 export class ProjectStore {
   private readonly runs: SQLiteRunStore;
-  constructor(private readonly db: Database.Database) { this.runs = new SQLiteRunStore(db); }
+  constructor(private readonly db: Database.Database, private readonly nativeResourceRoot?: string) { this.runs = new SQLiteRunStore(db); }
 
   private project(id: string): ProjectRow {
     if (!z.uuid().safeParse(id).success) throw new ProjectStoreError('invalid-input');
@@ -266,9 +272,19 @@ export class ProjectStore {
         if (catalog.row.content_hash !== value.contentHash || !isDeepStrictEqual(catalog.source, value.source))
           throw new ProjectStoreError('catalog-stale');
         const selected = selection(catalog.source, profileId);
+        let provider;
+        try {
+          provider = selectedResourceProvider(selected.commands);
+          if (provider?.mode === 'native') {
+            verifyNativePostgresProvider(provider);
+            if (!this.nativeResourceRoot || !isAbsolute(this.nativeResourceRoot)
+              || realpathSync.native(this.nativeResourceRoot) !== this.nativeResourceRoot) throw new Error('native-resource-root');
+          }
+        } catch { throw new ProjectStoreError('invalid-input'); }
         const fingerprint = sha256(canonical({ projectId, workspaceId: workspace.id, realPath: workspace.real_path,
           catalogHash: catalog.row.content_hash, sourceHash: value.sourceHash, profileId,
-          checks: selected.checks, commands: selected.commands, node: process.version }));
+          checks: selected.checks, commands: selected.commands, node: process.version,
+          ...(provider?.mode === 'native' ? { nativeResourceRoot: this.nativeResourceRoot } : {}) }));
         const old = this.db.prepare('SELECT * FROM plans WHERE workspace_id = ? AND catalog_id = ? AND fingerprint = ? ORDER BY created_at, id LIMIT 1')
           .get(workspace.id, catalog.row.id, fingerprint) as PlanRow | undefined;
         const planId = old?.id ?? randomUUID();
@@ -282,6 +298,7 @@ export class ProjectStore {
             requiredChecks: selected.checks.filter((item) => item.required).map((item) => item.id) },
           createdAt: new Date().toISOString(),
         };
+        if (provider?.mode === 'native') registration.plan.nativeResourceRoot = this.nativeResourceRoot!;
         if (old) {
           const stored = this.runs.getPlan(old.id);
           if (!stored || !isDeepStrictEqual(stored.project, registration.project)
@@ -293,7 +310,13 @@ export class ProjectStore {
         return { planId, projectId, workspaceId: workspace.id, realPath: workspace.real_path, profile: profileId, fingerprint, sourceHash: value.sourceHash,
           checks: selected.checks.map(({ id, title, required }) => ({ id, title, required })),
           commands: selected.commands, writes: selected.writes,
-          resourceEffects: [...new Set(selected.commands.flatMap(command => command.resources ?? []))].flatMap(kind => [
+          ...(provider?.mode === 'native' ? { nativeResourceRoot: this.nativeResourceRoot! } : {}),
+          resourceEffects: provider?.mode === 'native' ? [
+            `네이티브 PostgreSQL ${provider.postgresVersion}를 등록된 실제 실행 파일 폴더 ${provider.binaryRoot}에서 실행합니다.`,
+            `고정 실행 파일 SHA256 initdb=${provider.sha256.initdb}, pg_ctl=${provider.sha256.pg_ctl}, postgres=${provider.sha256.postgres}를 실행과 정리 직전에 재확인합니다.`,
+            `엔진 전용 ${this.nativeResourceRoot}의 실행 ID/자원 ID/cluster 하위에 새 합성 클러스터를 만들고 127.0.0.1 동적 포트만 사용합니다.`,
+            '전용 합성 DB 전체의 마이그레이션·쓰기·삭제와 전용 자료 정리를 허용합니다. 실제 프로세스 종료·포트 부재·자료 제거가 확인된 경우에만 정리 완료로 기록하며 소유 불명 자료는 보존합니다.',
+          ] : [...new Set(selected.commands.flatMap(command => command.resources ?? []))].flatMap(kind => [
             `새 일회용 ${databaseResourceNames[kind]} 컨테이너를 만들고 이 컴퓨터의 동적 포트로 연결합니다.`,
             ...(kind === 'mssql-test' ? ['SQL Server Developer의 개발·시험 전용 사용 조건과 EULA에 동의하여 생성합니다.'] : []),
             ...(kind === 'oracle-test' ? ['Oracle Database Free의 사용 조건으로 합성 시험 DB를 생성합니다.'] : []),
@@ -318,8 +341,20 @@ export class ProjectStore {
     if (catalog.row.project_id !== project.id || catalog.row.content_hash !== registration.catalog.contentHash
       || !isDeepStrictEqual(catalog.source, registration.catalog.source)) throw new ProjectStoreError('storage-error');
     const selected = selection(catalog.source, registration.plan.profile);
+    let provider;
+    try { provider = selectedResourceProvider(selected.commands); }
+    catch { throw new ProjectStoreError('plan-stale'); }
+    if (provider?.mode === 'native') {
+      if (!this.nativeResourceRoot || registration.plan.nativeResourceRoot !== this.nativeResourceRoot)
+        throw new ProjectStoreError('plan-stale');
+      try {
+        if (realpathSync.native(this.nativeResourceRoot) !== this.nativeResourceRoot || lstatSync(this.nativeResourceRoot).isSymbolicLink()) throw new Error('root-alias');
+        verifyNativePostgresProvider(provider);
+      } catch { throw new ProjectStoreError('plan-stale'); }
+    } else if (registration.plan.nativeResourceRoot !== undefined) throw new ProjectStoreError('plan-stale');
     const scope: ApprovalScope = { planId, fingerprint: registration.plan.fingerprint,
-      sourceHash: registration.plan.sourceHash, writes: selected.writes, commands: selected.commands };
+      sourceHash: registration.plan.sourceHash, writes: selected.writes, commands: selected.commands,
+      ...(provider?.mode === 'native' ? { nativeResourceRoot: registration.plan.nativeResourceRoot } : {}) };
     return { row, project, registration, scope, active: this.activeCatalog(row.workspace_id) === row.catalog_id };
   }
 
