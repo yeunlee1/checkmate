@@ -6,7 +6,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { nativePostgresProviderSchema, resourceProviderSchema, selectedResourceProvider, type NativePostgresProvider } from '@checkmate/contracts/resources';
 import { projectDefinitionSchema } from '@checkmate/contracts/project';
 import { apiInputs } from '@checkmate/contracts/api';
@@ -17,25 +17,46 @@ import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { createStoreFixture } from './저장시험자료.js';
 
-const workerRoot = resolve('.runtime/동시사용개선/실행잠금보완');
+const workerRoot = resolve('.runtime/릴리스020/시험보완/네이티브');
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 const fakeProvider: NativePostgresProvider = { mode: 'native', binaryRoot: resolve('합성실행파일'),
   postgresVersion: '17.11', sha256: { initdb: 'a'.repeat(64), pg_ctl: 'b'.repeat(64), postgres: 'c'.repeat(64) } };
 
+// CIM 첫 조회 준비와 제품 관측을 분리하며 준비 실패도 그대로 시험 실패로 남긴다.
+describe('실제 자기 PID 관측 준비와 UTF8 신원', () => {
+beforeAll(async () => {
+  if (process.platform !== 'win32') return;
+  const shell = join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const script = `$ErrorActionPreference='Stop'; (Get-CimInstance Win32_Process -Filter 'ProcessId=${process.pid}').ProcessId`;
+  const argv = ['-NoProfile', '-NonInteractive', '-Command', script];
+  const startedAt = Date.now();
+  const result = await promisify(execFile)(shell, argv, { encoding: 'utf8', windowsHide: true, timeout: 10000 });
+  expect(Number(result.stdout.trim())).toBe(process.pid);
+  await mkdir(workerRoot, { recursive: true });
+  await writeFile(join(workerRoot, 'CIM준비근거.json'), JSON.stringify({ argv: [shell, ...argv], exit: 0,
+    startedAt: new Date(startedAt).toISOString(), durationMs: Date.now() - startedAt,
+    observedPid: Number(result.stdout.trim()), timeoutMs: 10000 }));
+}, 15000);
+
 test.skipIf(process.platform !== 'win32')('실제 자기 PID 관측은 한글 argv와 실행 경로의 UTF8 신원을 보존한다', async () => {
   const module = pathToFileURL(resolve('packages/engine/dist/자원/네이티브포스트그레스.js')).href;
-  const script = `import { nativePostgresSystemDriver } from ${JSON.stringify(module)}; console.log(JSON.stringify(await nativePostgresSystemDriver.observe(process.pid)));`;
+  const script = `import { nativePostgresSystemDriver } from ${JSON.stringify(module)}; console.log(JSON.stringify({ expectedPid: process.pid, identity: await nativePostgresSystemDriver.observe(process.pid) }));`;
   const args = ['--input-type=module', '--eval', script, '한글 경로 인코딩 검사'];
+  const startedAt = Date.now();
   const result = await promisify(execFile)(process.execPath, args, { encoding: 'utf8', windowsHide: true, timeout: 15000 });
-  const identity = JSON.parse(result.stdout) as { executable: string; commandLine: string; argv: string[] };
+  const { expectedPid, identity } = JSON.parse(result.stdout) as { expectedPid: number;
+    identity: { pid: number; executable: string; commandLine: string; argv: string[] } };
+  expect(identity.pid).toBe(expectedPid);
   expect(identity.executable).toBe(process.execPath);
   expect(identity.commandLine).toContain('한글 경로 인코딩 검사');
   expect(identity.argv).toContain('한글 경로 인코딩 검사');
   await mkdir(workerRoot, { recursive: true });
   await writeFile(join(workerRoot, '한글신원관측근거.json'), JSON.stringify({ argv: [process.execPath, ...args], exit: 0, identity,
-    checkedAt: new Date().toISOString(), source: module }, null, 2));
+    startedAt: new Date(startedAt).toISOString(), checkedAt: new Date().toISOString(), source: module,
+    durationMs: Date.now() - startedAt, timeoutMs: 15000 }, null, 2));
+});
 });
 
 function realProvider(): NativePostgresProvider {
@@ -150,25 +171,56 @@ async function synthetic() {
     reusePid: () => { identity = { ...identity!, startedAt: '2026-10-04T00:01:00Z' }; } };
 }
 
-test.skipIf(process.platform !== 'win32')('실제 PID 파일 reader는 OS 코드 페이지의 한글 원바이트를 보존하고 BOM 및 잘못된 바이트는 거절한다', async () => {
+test('명시적 합성 949 자료는 한글 원바이트와 잘못된 바이트의 엄격한 디코딩을 구분한다', () => {
+  const original = Buffer.from('c7d1b1dbb0e6b7ce', 'hex');
+  const decoder = new TextDecoder('euc-kr', { fatal: true });
+  expect(decoder.decode(original)).toBe('한글경로');
+  expect(original.toString('hex')).toBe('c7d1b1dbb0e6b7ce');
+  for (const invalid of [[0xc7], [0xff], [0xc7, 0xff]]) expect(() => decoder.decode(Buffer.from(invalid))).toThrow();
+});
+
+test.skipIf(process.platform !== 'win32')('실제 PID 파일 reader는 OS 코드 페이지의 표현 가능한 원바이트를 보존하고 BOM 및 손실을 거절한다', async () => {
   const f = await fixture();
   const path = join(f.root, '한글PID.txt');
-  const expected = `${process.pid}\n${join(f.root, '한글경로')}\n1791072000\n41001\n\n127.0.0.1\n0\nready\n`;
   const shell = join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = `[System.IO.File]::WriteAllText('${path.replaceAll("'", "''")}', '${expected.replaceAll("'", "''")}', [System.Text.Encoding]::Default); [System.Text.Encoding]::Default.CodePage`;
-  const result = await promisify(execFile)(shell, ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
-  expect(Number(result.stdout.trim())).toBe(949);
+  const script = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);
+    $encoding=[System.Text.Encoding]::GetEncoding([System.Text.Encoding]::Default.CodePage,[System.Text.EncoderFallback]::ExceptionFallback,[System.Text.DecoderFallback]::ExceptionFallback);
+    $koreanPath='${join(f.root, '한글경로').replaceAll("'", "''")}'; $koreanLossRejected=$false;
+    try { $encoding.GetBytes($koreanPath) | Out-Null } catch [System.Text.EncoderFallbackException] { $koreanLossRejected=$true };
+    $resourcePath=if ($koreanLossRejected) { 'C:\\synthetic-pid\\cluster' } else { $koreanPath };
+    $expected="${process.pid}\n"+$resourcePath+"\n1791072000\n41001\n\n127.0.0.1\n0\nready\n";
+    $original=$encoding.GetBytes($expected); if ($encoding.GetString($original) -cne $expected) { throw 'strict-roundtrip' };
+    [System.IO.File]::WriteAllBytes('${path.replaceAll("'", "''")}', $original);
+    $invalidByteRejected=$false; $singleByteText=$null;
+    try { $singleByteText=$encoding.GetString([byte[]]@(0x81)) } catch [System.Text.DecoderFallbackException] { $invalidByteRejected=$true };
+    $encoderLossRejected=$false;
+    try { $encoding.GetBytes([string][char]0xD800) | Out-Null } catch [System.Text.EncoderFallbackException] { $encoderLossRejected=$true };
+    @{codePage=$encoding.CodePage;expected=$expected;koreanLossRejected=$koreanLossRejected;invalidByteRejected=$invalidByteRejected;singleByteText=$singleByteText;encoderLossRejected=$encoderLossRejected} | ConvertTo-Json -Compress`;
+  const argv = ['-NoProfile', '-NonInteractive', '-Command', script];
+  const result = await promisify(execFile)(shell, argv, { encoding: 'utf8', windowsHide: true });
+  const host = JSON.parse(result.stdout) as { codePage: number; expected: string; koreanLossRejected: boolean;
+    invalidByteRejected: boolean; singleByteText: string | null; encoderLossRejected: boolean };
+  expect(Number.isInteger(host.codePage) && host.codePage > 0).toBe(true);
+  expect(host.encoderLossRejected).toBe(true);
+  if (host.codePage === 1252) expect(host.koreanLossRejected).toBe(true);
+  if (host.codePage === 949) expect(host.koreanLossRejected).toBe(false);
   const original = await readFile(path);
-  expect(await nativePostgresSystemDriver.pidFile!(path)).toBe(expected);
+  expect(await nativePostgresSystemDriver.pidFile!(path)).toBe(host.expected);
   expect(await readFile(path)).toEqual(original);
   for (const bom of [[0xef, 0xbb, 0xbf], [0xff, 0xfe], [0xfe, 0xff], [0xff, 0xfe, 0, 0], [0, 0, 0xfe, 0xff]]) {
     await writeFile(path, Buffer.concat([Buffer.from(bom), original]));
     await expect(nativePostgresSystemDriver.pidFile!(path)).rejects.toMatchObject({ stderr: expect.stringContaining('pid-bom') });
   }
   await writeFile(path, Buffer.from([0x81]));
-  await expect(nativePostgresSystemDriver.pidFile!(path)).rejects.toThrow();
+  if (host.invalidByteRejected) await expect(nativePostgresSystemDriver.pidFile!(path)).rejects.toThrow();
+  else expect(await nativePostgresSystemDriver.pidFile!(path)).toBe(host.singleByteText);
+  expect(await readFile(path)).toEqual(Buffer.from([0x81]));
+  await writeFile(path, Buffer.alloc(8192, 0x41));
+  expect(await nativePostgresSystemDriver.pidFile!(path)).toBe('A'.repeat(8192));
   await writeFile(path, Buffer.alloc(8193, 0x41));
   await expect(nativePostgresSystemDriver.pidFile!(path)).rejects.toMatchObject({ stderr: expect.stringContaining('pid-size') });
+  await writeFile(join(workerRoot, 'PID코드페이지근거.json'), JSON.stringify({ argv: [shell, ...argv], exit: 0, host,
+    originalSha256: sha(original), originalBytesPreserved: true, bomRejected: 5, sizeAccepted: 8192, sizeRejected: 8193 }));
 });
 
 test('strict 제공자는 누락 Docker를 주입하지 않고 잘못된 mode와 start 덮어쓰기를 거절한다', () => {
