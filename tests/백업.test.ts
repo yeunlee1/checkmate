@@ -14,6 +14,7 @@ import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { EvidenceStore } from '../packages/engine/src/저장/증거저장.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { createStoreFixture } from './저장시험자료.js';
+import { schemaSql, schemaChecksum } from '../packages/engine/src/저장/스키마.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 const execute = promisify(execFile);
@@ -220,3 +221,41 @@ test('백업 중 증거 파일이 바뀌면 완성 표식을 남기지 않는다
     expect(await readdir(join(f.backupRoot, directories[0]!))).not.toContain('완료표식.txt');
   } finally { mocked.mockRestore(); }
 });
+
+
+test('v1 백업은 원래 SQL 체크섬과 최종 JSON 및 증거를 그대로 복구하고 자동 이행하지 않는다.', async () => {
+  const f = await createStoreFixture();
+  const paths = dataPaths(join(f.directory, 'v1관리')); await prepareDataPaths(paths);
+  const dbPath = join(paths.state, 'checkmate.sqlite'), db = new Database(dbPath);
+  cleanup.push(async () => { if (db.open) db.close(); await f.cleanup(); });
+  db.pragma('foreign_keys=ON'); db.exec(schemaSql);
+  const time = '2026-09-25T03:00:00.000Z', projectId = randomUUID(), workspaceId = randomUUID(), catalogId = randomUUID(), planId = randomUUID(), runId = randomUUID();
+  db.prepare('INSERT INTO schema_migrations VALUES (1,?,?,?)').run(schemaChecksum, time, 'synthetic-v1');
+  db.prepare('INSERT INTO projects (id,name,repository_identity,created_at) VALUES (?,?,?,?)').run(projectId, 'v1 합성 프로젝트', 'synthetic:v1', time);
+  db.prepare('INSERT INTO workspaces (id,project_id,real_path,path_fingerprint,created_at) VALUES (?,?,?,?,?)').run(workspaceId, projectId, f.directory, 'a'.repeat(64), time);
+  db.prepare('INSERT INTO catalogs (id,project_id,content_hash,source_json,created_at) VALUES (?,?,?,?,?)').run(catalogId, projectId, 'b'.repeat(64), '{}', time);
+  db.prepare('UPDATE projects SET active_catalog_id=? WHERE id=?').run(catalogId, projectId);
+  db.prepare('INSERT INTO plans (id,workspace_id,catalog_id,fingerprint,plan_json,source_hash,created_at) VALUES (?,?,?,?,?,?,?)').run(planId, workspaceId, catalogId, 'c'.repeat(64), '{}', 'd'.repeat(64), time);
+  const original = JSON.stringify({ schemaVersion: 1, runId, projectId, profile: 'quick', origin: 'live', state: 'cancelled',
+    verdict: 'unknown', planHash: 'c'.repeat(64), sourceBefore: 'd'.repeat(64), sourceAfter: null, workerExitCode: null,
+    environmentVerified: null, evidenceVerified: null, cleanupVerified: null, finalized: true, plannedChecks: [], requiredChecks: [], cases: [], reasons: ['cancelled'] });
+  db.prepare('INSERT INTO runs (id,workspace_id,plan_id,origin,state,verdict,phase,started_at,finalized_at,summary_json) VALUES (?,?,?,?,?,?,?,?,?,?)').run(runId, workspaceId, planId, 'live', 'cancelled', 'unknown', 'finished', time, time, original);
+  await mkdir(join(paths.runs, runId));
+  const evidence = Buffer.from('v1 합성 원본 증거');
+  await writeFile(join(paths.runs, runId, '원본.txt'), evidence);
+  db.prepare('INSERT INTO evidence (id,run_id,relative_path,sha256,byte_length,mime,sensitivity,state) VALUES (?,?,?,?,?,?,?,?)').run(randomUUID(), runId, '원본.txt', hash(evidence), evidence.length, 'text/plain', 'public', 'ready');
+  const before = db.prepare('SELECT version,checksum,applied_at,app_version FROM schema_migrations').all();
+  const saved = await createBackup(db, paths, join(f.directory, 'v1백업'));
+  expect(saved.manifest).toMatchObject({ schemaVersion: 1, schemaChecksum });
+  const restored = await restoreBackup(saved.backupDirectory, join(f.directory, 'v1복구'));
+  const restoredPath = join(restored.state, 'checkmate.sqlite');
+  expect(() => connectStore(restoredPath)).toThrowError(expect.objectContaining({ code: 'migration-required' }));
+  const reader = new Database(restoredPath, { readonly: true });
+  try {
+    expect(reader.prepare('SELECT version,checksum,applied_at,app_version FROM schema_migrations').all()).toEqual(before);
+    expect(reader.prepare('SELECT summary_json FROM runs WHERE id=?').get(runId)).toEqual({ summary_json: original });
+    expect(reader.prepare("SELECT name FROM sqlite_master WHERE name='run_control_owners'").get()).toBeUndefined();
+  } finally { reader.close(); }
+  expect(await readFile(join(restored.runs, runId, '원본.txt'))).toEqual(evidence);
+  expect(db.prepare('SELECT version,checksum,applied_at,app_version FROM schema_migrations').all()).toEqual(before);
+}, 30000);

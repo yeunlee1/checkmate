@@ -1,6 +1,6 @@
 // 합성 프로젝트와 가짜 PostgreSQL 자원으로 실행기 연결과 비밀 경계를 확인한다.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { PlanRegistration } from '@checkmate/contracts/runs';
@@ -66,7 +66,8 @@ process.stdout.write(event(mode === 'text' || mode === 'binary' || mode === 'cla
 type Mode = 'normal' | 'ansi-output' | 'output' | 'text' | 'binary' | 'claim' | 'cancel';
 async function scenario(mode: Mode, options: { declared?: boolean; second?: boolean;
   prepareFails?: boolean; cleanupVerified?: boolean; cancel?: boolean; noResources?: boolean;
-  workerCrash?: boolean; kind?: DatabaseResourceKind } = {}) {
+  workerCrash?: boolean; kind?: DatabaseResourceKind;
+  nativeRoot?: 'valid' | 'missing' | 'changed' | 'alias' | 'source-changed' } = {}) {
   const fixture = await createStoreFixture();
   const root = join(fixture.directory, '합성프로젝트');
   const runsRoot = join(fixture.directory, '실행');
@@ -76,12 +77,14 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
   const projectId = randomUUID();
   const kind = options.kind ?? 'postgres-test';
   const prefix = databaseEnvironmentPrefixes[kind];
+  const provider = { mode: 'native' as const, binaryRoot: root, postgresVersion: '17.11',
+    sha256: { initdb: 'a'.repeat(64), pg_ctl: 'b'.repeat(64), postgres: 'c'.repeat(64) } };
   const commands = (options.second ? ['first', 'second'] : ['first']).map((id, index) => {
     const declared = options.declared === true && index === 0;
     return { id, title: id, runtime: 'node', entry: 'tests/run.mjs',
       args: [mode, id, declared ? 'yes' : 'no', prefix], timeoutMs: 5000,
-      env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson',
-      ...(declared ? { resources: [kind] } : {}) };
+      env: { NODE_ENV: 'test', CHECKMATE_LOCK_DIR: join(fixture.directory, '공유잠금') }, writes: [], resultFormat: 'ndjson',
+      ...(declared ? { resources: [kind], ...(options.nativeRoot ? { resourceProvider: provider } : {}) } : {}) };
   });
   const project = { schemaVersion: 1, id: projectId, name: '합성 프로젝트',
     repositoryIdentity: 'synthetic:resource', commands,
@@ -105,6 +108,21 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
       requiredChecks: commands.map((item) => item.id) }, createdAt: new Date().toISOString(),
   };
   const db = connectStore(fixture.dbPath);
+  let nativeResourceRoot: string | undefined;
+  if (options.nativeRoot) {
+    const resourceRoot = join(fixture.directory, '네이티브전용');
+    await mkdir(resourceRoot);
+    nativeResourceRoot = await realpath(resourceRoot);
+    if (options.nativeRoot !== 'missing') plan.plan.nativeResourceRoot = options.nativeRoot === 'changed'
+      ? join(fixture.directory, '다른전용') : nativeResourceRoot;
+    if (options.nativeRoot === 'alias') {
+      const alias = join(fixture.directory, '전용별칭');
+      await symlink(nativeResourceRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      plan.plan.nativeResourceRoot = alias;
+      nativeResourceRoot = alias;
+    }
+    if (options.nativeRoot === 'source-changed') await writeFile(join(root, 'tests', 'run.mjs'), program + '\n// 합성 원본 변경\n');
+  }
   const prepare = vi.fn(async () => {
     if (options.prepareFails) throw new Error('합성 준비 실패');
     return { environment: Object.fromEntries(databaseResourceKinds.flatMap(resource => {
@@ -119,12 +137,12 @@ async function scenario(mode: Mode, options: { declared?: boolean; second?: bool
     const evidence = new EvidenceStore(db, runsRoot);
     const events = new EventStore(db);
     const service = new RunService(store, createProjectExecutor({ runsRoot, evidenceStore: evidence,
-      eventStore: events, ...(options.noResources ? {} : { resources: { prepare, cleanup } }) }));
+      eventStore: events, ...(options.noResources ? {} : { resources: { prepare, cleanup, ...(options.nativeRoot ? { nativeResourceRoot } : {}) } }) }));
     if (options.workerCrash) workerControl.killNext = true;
     const admitted = service.start({ projectId, planId: plan.plan.id, requestId: randomUUID() });
     if (options.cancel) setTimeout(() => { void service.cancel(admitted.runId); }, 500);
     const result = await service.wait(admitted.runId);
-    return { result, events: events.list(admitted.runId), evidence: evidence.list(admitted.runId), prepare, cleanup };
+    return { result, events: events.list(admitted.runId), evidence: evidence.list(admitted.runId), prepare, cleanup, provider };
   } finally { db.close(); await fixture.cleanup(); }
 }
 
@@ -209,5 +227,17 @@ describe('부모 소유 자원 실행 연결', () => {
     const { result } = await scenario('claim');
     expect(result.environmentVerified).toBe(false);
     expect(result.verdict).not.toBe('passed');
+  });
+  it.each(['missing', 'changed', 'alias', 'source-changed'] as const)('native %s 계획은 prepare 및 검사 spawn 전에 거절한다', async nativeRoot => {
+    const { result, prepare, cleanup, evidence } = await scenario('normal', { declared: true, nativeRoot });
+    expect(result.state).toBe('blocked');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(evidence).toEqual([]);
+  });
+  it('동결 native 구성은 원본 검사 뒤 다섯 번째 prepare 인자로만 전달한다', async () => {
+    const { result, prepare, provider } = await scenario('normal', { declared: true, nativeRoot: 'valid' });
+    expect(result.verdict).toBe('passed');
+    expect(prepare.mock.calls[0]).toEqual([result.runId, expect.any(String), expect.any(AbortSignal), ['postgres-test'], provider]);
   });
 });

@@ -1,0 +1,1 @@
+[{ "id": "expense-annual-one", "title": "합성 단일 선택 계약", "requirementId": "req-expense-annual-one", "commandId": "expense-one", "required": true, "kind": "logic", "expected": "선택 1개와 필터 제외 20개 및 종료 일치", "codePaths": ["scripts/단일검사.mjs", "tests/검사항목.mjs"] }]

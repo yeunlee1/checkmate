@@ -29,7 +29,7 @@ test.each(['unverifiable', 'blocked'] as const)('%s 실행은 AI 제거를 거�
         cleanup: { verified: true, checkedAt: new Date().toISOString(), reason: '합성 컨테이너 부재 확인' } });
       return { verified: true, resources: product.resources.list(runId) };
     },
-  });
+  }, { lockRoot: join(files.directory, '공유잠금') });
   const plan = { project: { id: randomUUID(), name: '복구 시험', repositoryIdentity: 'synthetic:recovery' },
     workspace: { id: randomUUID(), realPath: files.directory, pathFingerprint: 'a'.repeat(64) },
     catalog: { id: randomUUID(), contentHash: 'b'.repeat(64), source: {} },

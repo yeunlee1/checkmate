@@ -1,6 +1,6 @@
 // 프로젝트 원본의 명령과 요구사항 및 검사항목을 엄격하게 검증한다.
 import { z } from 'zod';
-import { databaseEnvironmentPrefixes, databaseResourceKindSchema, databaseResourceKinds } from './시험자원.js';
+import { databaseEnvironmentPrefixes, databaseResourceKindSchema, databaseResourceKinds, resourceProviderSchema } from './시험자원.js';
 
 const identifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u);
 const title = z.string().trim().min(1).max(200);
@@ -35,9 +35,16 @@ const commandSchema = z.strictObject({
     }
   }),
   writes: z.array(relativePath).max(100),
+  exclusiveResources: z.array(z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9:._/-]*$/u)).max(100)
+    .refine(values => new Set(values.map(value => value.toLowerCase())).size === values.length, '공유 자원 키가 중복되었습니다.').optional(),
   resultFormat: z.enum(['ndjson', 'exit-code']),
   resources: z.array(databaseResourceKindSchema).max(databaseResourceKinds.length)
     .refine(values => new Set(values).size === values.length, '시험 DB 종류가 중복되었습니다.').optional(),
+  resourceProvider: resourceProviderSchema.optional(),
+}).superRefine((command, context) => {
+  if (command.resourceProvider?.mode === 'native' &&
+    (command.resources?.length !== 1 || command.resources[0] !== 'postgres-test'))
+    context.addIssue({ code: 'custom', path: ['resourceProvider'], message: '네이티브 제공자는 PostgreSQL 시험 자원만 지원합니다.' });
 });
 
 const profileSchema = z.strictObject({

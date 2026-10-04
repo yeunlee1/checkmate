@@ -34,7 +34,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 type Scenario = 'exit-pass' | 'exit-fail' | 'ndjson-pass' | 'ndjson-fail' | 'missing'
   | 'duplicate' | 'outside' | 'tampered-evidence' | 'source-change' | 'prechange' | 'cancel'
-  | 'worker-crash' | 'secret-output' | 'two-commands' | 'ndjson-timeout' | 'ndjson-output-limit' | 'ndjson-many-fail';
+  | 'worker-crash' | 'secret-output' | 'two-commands' | 'ndjson-timeout' | 'ndjson-output-limit' | 'ndjson-many-fail' | 'ndjson-unknown';
 
 const script = String.raw`
 import { createHash, randomUUID } from 'node:crypto';
@@ -54,6 +54,7 @@ const evidence = { id, relativePath: '증거.txt', sha256: createHash('sha256').
 const result = { testId: process.argv[3] ?? 'check-1', status: 'passed', requirementId: 'req-1', expected: '성공',
   observed: mode === 'secret-output' ? 'Authorization: Bearer sample-secret' : '성공',
   evidenceIds: mode === 'tampered-evidence' ? [id] : [], severity: 'info', location: null };
+if (mode === 'ndjson-unknown') result.status = 'unknown';
 if (mode.startsWith('ndjson') || mode === 'duplicate' || mode === 'outside'
   || mode === 'tampered-evidence' || mode === 'secret-output' || mode === 'two-commands') {
   process.stdout.write(event(1, 'case-result', mode === 'outside' ? { ...result, testId: 'other' } : result) + '\n');
@@ -89,10 +90,10 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
   const source = {
     project: { schemaVersion: 1, id: projectId, name: '합성 프로젝트', repositoryIdentity: 'synthetic:executor',
       commands: [{ id: 'run', title: '합성 명령', runtime: 'node', entry: 'tests/run.mjs',
-        args: [mode], timeoutMs: mode === 'ndjson-timeout' ? 1200 : 5000, env: { NODE_ENV: 'test' }, writes: [],
+        args: [mode], timeoutMs: mode === 'ndjson-timeout' ? 1200 : 5000, env: { NODE_ENV: 'test', CHECKMATE_LOCK_DIR: join(fixture.directory, '공유잠금') }, writes: [],
         resultFormat: ndjson ? 'ndjson' : 'exit-code' },
       ...(second ? [{ id: 'other-run', title: '두 번째 명령', runtime: 'node', entry: 'tests/run.mjs',
-        args: [mode, 'check-2'], timeoutMs: 5000, env: { NODE_ENV: 'test' }, writes: [], resultFormat: 'ndjson' }] : [])],
+        args: [mode, 'check-2'], timeoutMs: 5000, env: { NODE_ENV: 'test', CHECKMATE_LOCK_DIR: join(fixture.directory, '공유잠금') }, writes: [], resultFormat: 'ndjson' }] : [])],
       profiles: [{ id: 'quick', title: '빠른 검사', checkIds }] },
     requirements: [{ id: 'req-1', title: '요구사항', description: '합성 검사 결과' }],
     checks: [{ id: 'check-1', title: '검사', requirementId: 'req-1', commandId: 'run',
@@ -142,13 +143,13 @@ async function scenario(mode: Scenario, runsRootAlias?: (runsRoot: string, direc
       && ['exit-pass', 'ndjson-pass', 'ndjson-fail', 'ndjson-timeout', 'ndjson-output-limit'].includes(mode)
       ? JSON.parse(await readFile(join(runsRoot, started.runId, '명령-1.json'), 'utf8')) as { status: string; exitCode: number | null }
       : null;
-    const repair = mode === 'ndjson-many-fail' ? await new ProductService(db, evidence, async () => result).handle({
+    const repair = mode === 'ndjson-many-fail' ? await new ProductService(db, evidence, async () => result, undefined, undefined, { lockRoot: join(fixture.directory, '공유잠금') }).handle({
       apiVersion: 1, requestId: randomUUID(), method: 'result',
       input: { runId: started.runId, section: 'repair-bundle' },
     }, 'agent') : null;
     const repairPages: Array<{ items: Array<{ testId: string; observed: string; truncated: boolean }>; nextCursor: string | null; total: number }> = [];
     if (repairBudget) {
-      const product = new ProductService(db, evidence, async () => result);
+      const product = new ProductService(db, evidence, async () => result, undefined, undefined, { lockRoot: join(fixture.directory, '공유잠금') });
       const server = createAgentServer(request => product.handle(request, 'agent'));
       const client = new Client({ name: 'repair-budget-test', version: '1.0.0' });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -336,5 +337,10 @@ describe('고정 계획 검사실행기', () => {
     expect(result.cases.map((item) => item.testId)).toEqual(['check-1', 'check-2']);
     expect(evidence).toHaveLength(2);
     expect(events.map((item) => item.sequence)).toEqual([1, 2]);
+  });
+  it('NDJSON unknown 검사는 명령 종료0이어도 unknown을 유지한다', async () => {
+    const { result } = await scenario('ndjson-unknown');
+    expect(result.cases[0]?.status).toBe('unknown');
+    expect(result.verdict).toBe('unknown');
   });
 });

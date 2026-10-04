@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.1.0-2563eb?style=flat-square" alt="0.1.0 무서명 배포"></a>
+  <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/개발현황.md"><img src="https://img.shields.io/badge/status-0.2.0-2563eb?style=flat-square" alt="0.2.0 무서명 배포"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/사용안내.md"><img src="https://img.shields.io/badge/interface-Desktop%20%7C%20CLI%20%7C%20MCP-172438?style=flat-square" alt="Desktop, CLI, MCP 지원"></a>
   <a href="https://github.com/yeunlee1/checkmate/blob/develop/문서/저장및연결계약.md"><img src="https://img.shields.io/badge/storage-Local%20SQLite-172438?style=flat-square" alt="로컬 SQLite 저장"></a>
 </p>
@@ -56,7 +56,11 @@ AI가 코드를 만들 때마다 사람이 화면을 누르고, 권한을 바꾸
 
 ## 빠르게 시작하기.
 
-Windows 설치본은 [GitHub Releases](https://github.com/yeunlee1/checkmate/releases)에서 확인하세요. **`0.1.0`은 자동 업데이트 기능을 포함한 무서명 배포 버전**으로, Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 자동 업데이트가 없는 이전 개발 설치본은 새 설치본을 직접 설치해야 합니다.
+Windows 설치본은 [GitHub Releases](https://github.com/yeunlee1/checkmate/releases)에서 확인하세요. **`0.2.0`은 자동 업데이트 기능을 포함한 무서명 배포 버전**으로, Windows 보안 경고가 표시되거나 조직 정책에 따라 실행이 차단될 수 있습니다. 자동 업데이트가 없는 이전 개발 설치본은 새 설치본을 직접 설치해야 합니다.
+
+설치만 해서 사용할 회사 PC와 다른 사용자에게는 [다른 PC 설치와 사용](문서/다른PC설치와사용.md)을 안내하세요. 각 PC에서 앱의 MCP 실행 정보를 복사하며 제작자의 경로나 인증 설정은 필요하지 않습니다.
+
+이번 버전의 다중 세션·작업 폴더·네이티브 PostgreSQL 변경과 자료 전환 조건은 [v0.2.0 변경 내역](문서/릴리스020변경내역.md)을 확인하세요.
 
 아래는 Windows에서 소스로 실행하는 방법입니다. Node.js 24와 Git이 필요하며, 개발 코드는 `develop` 브랜치에 있습니다.
 

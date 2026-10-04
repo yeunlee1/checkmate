@@ -9,6 +9,9 @@ import type { ApiRequest } from '@checkmate/contracts/api';
 import { dataPaths, prepareDataPaths, verifyLocalEndpoint } from '../packages/engine/src/연결/개인경로.js';
 import { requestLocal, serveLocal } from '../packages/engine/src/연결/로컬통신.js';
 import { JsonFrames } from '../packages/engine/src/연결/프레임.js';
+import { SessionControl } from '../packages/engine/src/연결/세션제어.js';
+import { createAgentInvoker } from '../packages/engine/src/서비스/클라이언트.js';
+import { createStoreFixture } from './저장시험자료.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -86,4 +89,33 @@ describe('실제 로컬 통신', () => {
     await expect(prepareDataPaths(dataPaths(root))).rejects.toMatchObject({ code: 'unrecognized-data-root' });
     expect(await readFile(join(root, '보존.txt'), 'utf8')).toBe('보존');
   });
+});
+
+
+it('MCP closure의 자격은 재연결에서 같은 owner로 검증되고 재시작 뒤 제어는 닫지만 조회는 유지한다.', async () => {
+  const f = await createStoreFixture(); cleanups.push(f.cleanup);
+  const paths = dataPaths(join(f.directory, '관리자료')); await prepareDataPaths(paths);
+  const contexts: string[] = [];
+  let opened = 0;
+  const listen = async (sessions: SessionControl) => serveLocal(paths, async (r, role, context) => {
+    if (r.method === 'capabilities') return { apiVersion: 1, requestId: r.requestId, ok: true,
+      data: { capabilities: ['agent-run-control', 'multi-workspace', 'public-images'], connection: { dataRoot: paths.root }, ...(context ? { agentSession: { ownerId: context.ownerId } } : {}) } };
+    if (r.method === 'open-agent-session') { opened++; return { apiVersion: 1, requestId: r.requestId, ok: true, data: sessions.open() }; }
+    if (r.method === 'projects') return { apiVersion: 1, requestId: r.requestId, ok: true, data: { items: [] } };
+    if (r.method === 'cancel' && role === 'agent') contexts.push(sessions.assert(context).ownerId);
+    return { apiVersion: 1, requestId: r.requestId, ok: true, data: { ownerId: context?.ownerId ?? null } };
+  }, sessions);
+  const original = await listen(new SessionControl());
+  const invoke = createAgentInvoker({ dataRoot: paths.root, lockRoot: join(f.directory, '공유잠금') });
+  try {
+    expect(await invoke(request('cancel'))).toMatchObject({ ok: true });
+    expect(await invoke(request('cancel'))).toMatchObject({ ok: true });
+    expect(opened).toBe(1); expect(new Set(contexts).size).toBe(1);
+    const cap = await invoke(request()); expect(JSON.stringify(cap)).not.toMatch(/credential|ownerHash|secret/u);
+  } finally { await original.close(); }
+  const restarted = await listen(new SessionControl()); cleanups.push(restarted.close);
+  expect(await invoke(request('cancel'))).toMatchObject({ ok: false, error: { code: 'agent-control-required' } });
+  expect(await invoke(request('projects'))).toMatchObject({ ok: true });
+  expect(await invoke(request())).toMatchObject({ ok: true });
+  expect(opened).toBe(1); expect(contexts).toHaveLength(2);
 });

@@ -6,12 +6,13 @@ import { runOwnedCommand } from './소유실행.js';
 import { hideSecretsInNdjson } from './비밀가림.js';
 import type { EvidenceInput } from '../저장/증거저장.js';
 import type { ProcessOutcome, RegisteredCommand } from '../작업실행.js';
-import { selectDatabaseEnvironment, type DatabaseResourceKind } from '@checkmate/contracts/resources';
+import { selectDatabaseEnvironment, type DatabaseResourceKind, type ResourceProvider } from '@checkmate/contracts/resources';
 
 export type FixedCommand = {
   id: string; entry: string; args: string[]; timeoutMs: number; env: Record<string, string>;
   resultFormat: 'exit-code' | 'ndjson'; checkIds: string[];
   resources?: DatabaseResourceKind[];
+  resourceProvider?: ResourceProvider;
 };
 export type WorkerConfig = {
   runId: string; sourceRoot: string; evidenceRoot: string; ownerToken: string;

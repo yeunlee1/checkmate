@@ -23,6 +23,7 @@ import type { AdapterEvent } from '@checkmate/contracts/events';
 import type { CommandObservation, FixedCommand, WorkerConfig } from '../작업/검사작업.js';
 import { hideSecrets, hideSecretsInNdjson, hideSecretsInValue } from '../작업/비밀가림.js';
 import { verifyEvidence } from '../증거검증.js';
+import { selectedResourceProvider, type ResourceProvider } from '@checkmate/contracts/resources';
 
 const evidenceSchema = z.strictObject({ id: z.uuid(), relativePath: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/u), byteLength: z.number().int().nonnegative(),
@@ -39,7 +40,7 @@ const commandStartSchema = z.strictObject({ kind: z.literal('command-start'), co
 const secretPattern = /authorization|cookie|bearer|token|password|secret|api[ _-]?key/iu;
 const uuid = z.uuid();
 type Options = { runsRoot: string; evidenceStore: EvidenceStore; eventStore: EventStore;
-  resources?: Pick<DatabaseResources, 'prepare' | 'cleanup'> };
+  resources?: Pick<DatabaseResources, 'prepare' | 'cleanup'> & { nativeResourceRoot?: string | undefined } };
 type ObservedWorker = { exitCode: number | null; observations: CommandObservation[]; protocolValid: boolean };
 
 function scrub(value: unknown, secrets: readonly string[] = []): unknown {
@@ -84,7 +85,7 @@ async function makeRunRoot(runsRoot: string, runId: string, ownerToken: string):
 }
 
 async function fixedCommands(sourceRoot: string, source: ProjectSource, plan: PlanRegistration): Promise<{
-  commands: FixedCommand[]; checks: Map<string, CheckDefinition> }> {
+  commands: FixedCommand[]; checks: Map<string, CheckDefinition>; provider: ResourceProvider | undefined }> {
   const profile = source.project.profiles.find((item) => item.id === plan.plan.profile);
   if (!profile || !isDeepStrictEqual(profile.checkIds, plan.plan.plannedChecks)) throw new Error('선택한 프로필이 다릅니다.');
   const checks = new Map(source.checks.map((item) => [item.id, item]));
@@ -104,9 +105,10 @@ async function fixedCommands(sourceRoot: string, source: ProjectSource, plan: Pl
     chosen.push({ id: item.id, entry, args: item.args, timeoutMs: item.timeoutMs,
       env: item.env, resultFormat: item.resultFormat,
       ...(item.resources ? { resources: item.resources } : {}),
+      ...(item.resourceProvider ? { resourceProvider: item.resourceProvider } : {}),
       checkIds: selected.filter((value) => value.commandId === item.id).map((value) => value.id) });
   }
-  return { commands: chosen, checks };
+  return { commands: chosen, checks, provider: selectedResourceProvider(chosen) };
 }
 
 async function evidenceHasSecret(root: string, evidence: z.infer<typeof evidenceSchema>, secrets: readonly string[]): Promise<boolean> {
@@ -243,7 +245,14 @@ export function createProjectExecutor(options: Options): RunExecutor {
     if (snapshot.contentHash !== plan.catalog.contentHash || snapshot.sourceHash !== plan.plan.sourceHash
       || !isDeepStrictEqual(snapshot.source, parsed.data)) return { ...candidate, state: 'blocked', sourceAfter: snapshot.sourceHash };
     let fixed;
-    try { fixed = await fixedCommands(snapshot.realPath, parsed.data, plan); }
+    try {
+      fixed = await fixedCommands(snapshot.realPath, parsed.data, plan);
+      if (fixed.provider?.mode === 'native') {
+        const root = plan.plan.nativeResourceRoot;
+        if (!root || root !== options.resources?.nativeResourceRoot || resolve(root) !== root || await checkedRoot(root) !== root)
+          throw new Error('불변 계획과 네이티브 자원의 실제 전용 경로가 다릅니다.');
+      } else if (plan.plan.nativeResourceRoot !== undefined) throw new Error('Docker 계획에 native 전용 경로가 있습니다.');
+    }
     catch { return { ...candidate, state: 'blocked' }; }
     const titles = fixed.commands.map((command) => parsed.data.project.commands.find((item) => item.id === command.id)!.title);
     const emit = (progress: ProgressUpdate) => onProgress?.(progress);
@@ -265,7 +274,9 @@ export function createProjectExecutor(options: Options): RunExecutor {
     let resourcesAfterCleanup: ResourceRecord[] = [];
     try {
       if (needsResource) {
-        const resource = await options.resources!.prepare(initial.runId, ownerToken, signal, resourceKinds);
+        const resource = fixed.provider === undefined
+          ? await options.resources!.prepare(initial.runId, ownerToken, signal, resourceKinds)
+          : await options.resources!.prepare(initial.runId, ownerToken, signal, resourceKinds, fixed.provider);
         config.resourceEnvironment = resource.environment;
         config.resourceSecrets = resource.secrets;
         prepared = true;
