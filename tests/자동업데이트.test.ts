@@ -420,6 +420,7 @@ it('누적 실제 본문은 64KiB까지만 허용한다', async () => {
 });
 it('빈 본문과 손상 UTF8은 거부하며 청크 경계의 정상 UTF8은 보존한다', async () => {
   const empty = metadataRequest(); empty.respond([]); await expect(empty.result).rejects.toThrow();
+  const onlyBom = metadataRequest(); onlyBom.respond([Buffer.from('\ufeff')]); await expect(onlyBom.result).rejects.toThrow();
   const broken = metadataRequest(); broken.respond([Buffer.from([0xc3, 0x28])]); await expect(broken.result).rejects.toThrow();
   const split = metadataRequest(); const data = Buffer.from('업데이트'); split.respond([data.subarray(0, 1), data.subarray(1)]);
   await expect(split.result).resolves.toBe('업데이트');
@@ -430,13 +431,47 @@ it('리디렉션을 거쳐도 전체 15초 제한을 연장하지 않는다', as
   await vi.advanceTimersByTimeAsync(4999); expect(request.abort).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1); await rejected; expect(request.abort).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
 });
-it.each(['error', 'abort', 'close'])('요청 %s도 최신 버전으로 처리하지 않는다', async event => {
-  const { request, result } = metadataRequest(); request.emit(event, new Error('비밀 주소')); await expect(result).rejects.toThrow('update-metadata-unavailable');
+it('응답 전 request close 뒤 정상 response end는 조회에 성공한다', async () => {
+  const { request, result, respond } = metadataRequest(); const resolved = expect(result).resolves.toBe(metadata());
+  request.emit('close'); request.emit('redirect', 302, 'GET', 'https://release-assets.githubusercontent.com/asset');
+  expect(request.followRedirect).toHaveBeenCalledOnce(); respond([Buffer.from(metadata())]); await resolved;
+  expect(request.abort).not.toHaveBeenCalled();
 });
-it.each(['error', 'aborted'])('응답 %s 뒤의 부분 본문은 성공하지 않는다', async event => {
-  const { request, result } = metadataRequest(); const response = Object.assign(new EventEmitter(), { statusCode: 200 });
-  request.emit('response', response); response.emit('data', Buffer.from(metadata())); response.emit(event, new Error('응답 중단')); response.emit('end');
-  await expect(result).rejects.toThrow();
+it('본문 수신 중 request close는 response end까지 기다리고 완료 후 close도 성공을 유지한다', async () => {
+  vi.useFakeTimers(); const { request, result } = metadataRequest(); const completed = vi.fn(); void result.then(completed, completed);
+  const response = Object.assign(new EventEmitter(), { statusCode: 200 }); request.emit('response', response);
+  response.emit('data', Buffer.from(metadata())); request.emit('close'); await vi.advanceTimersByTimeAsync(14999);
+  expect(completed).not.toHaveBeenCalled(); expect(request.abort).not.toHaveBeenCalled();
+  response.emit('end'); response.emit('close'); request.emit('close');
+  await expect(result).resolves.toBe(metadata()); expect(request.abort).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+});
+it.each(['응답 없음', 'end 없는 부분 응답'])('request close 뒤 %s은 전체 15초에 실패하고 늦은 완료도 거절한다', async mode => {
+  vi.useFakeTimers(); const { request, result, respond } = metadataRequest(); const rejected = expect(result).rejects.toThrow('update-metadata-unavailable');
+  request.emit('close'); await vi.advanceTimersByTimeAsync(10000);
+  const response = Object.assign(new EventEmitter(), { statusCode: 200 });
+  if (mode === 'end 없는 부분 응답') { request.emit('response', response); response.emit('data', Buffer.from(metadata())); }
+  await vi.advanceTimersByTimeAsync(4999); expect(request.abort).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1); await rejected; expect(request.abort).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  if (mode === '응답 없음') respond([Buffer.from(metadata())]);
+  else { response.emit('data', Buffer.from(metadata())); response.emit('end'); response.emit('close'); }
+  await expect(result).rejects.toThrow('update-metadata-unavailable'); expect(request.abort).toHaveBeenCalledOnce();
+});
+it.each(['error', 'abort'])('request close 뒤 요청 %s도 늦은 정상 응답으로 바뀌지 않는다', async event => {
+  vi.useFakeTimers(); const { request, result, respond } = metadataRequest();
+  request.emit('close'); request.emit(event, new Error('비밀 주소')); respond([Buffer.from(metadata())]);
+  await expect(result).rejects.toThrow('update-metadata-unavailable'); expect(request.abort).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+});
+it.each(['error', 'abort'])('본문 수신 중 요청 %s는 늦은 response end로 바뀌지 않는다', async event => {
+  vi.useFakeTimers(); const { request, result } = metadataRequest(); const response = Object.assign(new EventEmitter(), { statusCode: 200 });
+  request.emit('close'); request.emit('response', response); response.emit('data', Buffer.from(metadata()));
+  request.emit(event, new Error('요청 중단')); response.emit('end'); response.emit('close');
+  await expect(result).rejects.toThrow('update-metadata-unavailable'); expect(request.abort).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+});
+it.each(['error', 'aborted', 'close'])('응답 %s 뒤의 부분 본문과 늦은 end는 성공하지 않는다', async event => {
+  vi.useFakeTimers(); const { request, result } = metadataRequest(); const response = Object.assign(new EventEmitter(), { statusCode: 200 });
+  request.emit('close'); request.emit('response', response); response.emit('data', Buffer.from(metadata())); response.emit(event, new Error('응답 중단'));
+  response.emit('data', Buffer.from(metadata())); response.emit('end'); response.emit('close');
+  await expect(result).rejects.toThrow('update-metadata-unavailable'); expect(request.abort).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
 });
 it('요청 생성과 동기 리디렉션 실패도 제한 타이머를 정리한다', async () => {
   vi.useFakeTimers(); await expect(readUpdateMetadata(() => { throw new Error('요청 생성 실패'); })).rejects.toThrow();
