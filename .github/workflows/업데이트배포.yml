@@ -13,6 +13,7 @@ on:
       - 'forge.config.cjs'
       - 'scripts/개발설치본.mjs'
       - 'scripts/자동업데이트검증.mjs'
+      - 'scripts/관리형연결검증.mjs'
       - 'scripts/프로젝트자료폴더화면검증.mjs'
       - 'scripts/프로젝트자료폴더통합검증.mjs'
       - 'packages/**'
@@ -95,6 +96,10 @@ jobs:
         env:
           BUILD_REPORT: ${{ steps.package.outputs.report }}
         run: node scripts/자동업데이트검증.mjs "$env:BUILD_REPORT"
+      - name: 관리형 AI 연결 버전 전환 수용
+        env:
+          BUILD_REPORT: ${{ steps.package.outputs.report }}
+        run: node scripts/관리형연결검증.mjs "$env:BUILD_REPORT"
       - name: 업데이트 수용 근거 보관
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -108,6 +113,7 @@ jobs:
             .runtime/update-*/앱표준오류.log
             .runtime/update-*/업데이트오류.log
             .runtime/update-*/CheckMateFixture*/SquirrelSetup.log
+            .runtime/검증/관리형연결/*/검증결과.json
           if-no-files-found: ignore
           retention-days: 14
       - name: 검증된 설치 산출물 보관
