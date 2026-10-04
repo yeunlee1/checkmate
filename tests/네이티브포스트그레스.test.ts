@@ -4,9 +4,10 @@ import { execFile } from 'node:child_process';
 import { appendFile, lstat, mkdir, readFile, realpath, rm, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { createServer } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 import { nativePostgresProviderSchema, resourceProviderSchema, selectedResourceProvider, type NativePostgresProvider } from '@checkmate/contracts/resources';
 import { projectDefinitionSchema } from '@checkmate/contracts/project';
 import { apiInputs } from '@checkmate/contracts/api';
@@ -23,22 +24,6 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
 const fakeProvider: NativePostgresProvider = { mode: 'native', binaryRoot: resolve('합성실행파일'),
   postgresVersion: '17.11', sha256: { initdb: 'a'.repeat(64), pg_ctl: 'b'.repeat(64), postgres: 'c'.repeat(64) } };
-
-// CIM 첫 조회 준비와 제품 관측을 분리하며 준비 실패도 그대로 시험 실패로 남긴다.
-describe('실제 자기 PID 관측 준비와 UTF8 신원', () => {
-beforeAll(async () => {
-  if (process.platform !== 'win32') return;
-  const shell = join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = `$ErrorActionPreference='Stop'; (Get-CimInstance Win32_Process -Filter 'ProcessId=${process.pid}').ProcessId`;
-  const argv = ['-NoProfile', '-NonInteractive', '-Command', script];
-  const startedAt = Date.now();
-  const result = await promisify(execFile)(shell, argv, { encoding: 'utf8', windowsHide: true, timeout: 10000 });
-  expect(Number(result.stdout.trim())).toBe(process.pid);
-  await mkdir(workerRoot, { recursive: true });
-  await writeFile(join(workerRoot, 'CIM준비근거.json'), JSON.stringify({ argv: [shell, ...argv], exit: 0,
-    startedAt: new Date(startedAt).toISOString(), durationMs: Date.now() - startedAt,
-    observedPid: Number(result.stdout.trim()), timeoutMs: 10000 }));
-}, 15000);
 
 test.skipIf(process.platform !== 'win32')('실제 자기 PID 관측은 한글 argv와 실행 경로의 UTF8 신원을 보존한다', async () => {
   const module = pathToFileURL(resolve('packages/engine/dist/자원/네이티브포스트그레스.js')).href;
@@ -57,6 +42,19 @@ test.skipIf(process.platform !== 'win32')('실제 자기 PID 관측은 한글 ar
     startedAt: new Date(startedAt).toISOString(), checkedAt: new Date().toISOString(), source: module,
     durationMs: Date.now() - startedAt, timeoutMs: 15000 }, null, 2));
 });
+
+test.skipIf(process.platform !== 'win32')('실제 loopback 포트는 자기 프로세스만 소유자로 확인한다', async () => {
+  const server = createServer();
+  try {
+    await new Promise<void>((accept, reject) => {
+      server.once('error', reject);
+      server.listen({ host: '127.0.0.1', port: 0, exclusive: true }, accept);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('시험 포트가 없습니다.');
+    await nativePostgresSystemDriver.portOwned(address.port, process.pid);
+    await expect(nativePostgresSystemDriver.portOwned(address.port, process.pid + 1)).rejects.toThrow('소유가 다릅니다');
+  } finally { await new Promise<void>((accept, reject) => server.close(error => error ? reject(error) : accept())); }
 });
 
 function realProvider(): NativePostgresProvider {

@@ -83,7 +83,10 @@ function bindPort(port: number): Promise<number> {
 async function powershell(script: string): Promise<string> {
   if (process.platform !== 'win32' || !process.env.SystemRoot) throw new Error('네이티브 소유 관측은 Windows에서 지원합니다.');
   const path = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return (await execute(path, ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; ${script}`],
+  // 제한 환경의 자동 모듈 검색을 피하고 실행한 Windows PowerShell의 기본 모듈만 읽는다.
+  const modules = ['Microsoft.PowerShell.Utility', 'CimCmdlets'].map(name =>
+    `Import-Module ($PSHOME + '\\Modules\\${name}\\${name}.psd1') -ErrorAction Stop;`).join(' ');
+  return (await execute(path, ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[Console]::OutputEncoding; ${modules} ${script}`],
     { env: safeEnvironment(), windowsHide: true, timeout: 10000, maxBuffer: 65536 })).stdout;
 }
 
@@ -135,7 +138,7 @@ export const nativePostgresSystemDriver: NativePostgresDriver = {
   freePort: () => bindPort(0),
   async portAbsent(port) { await bindPort(port); },
   async portOwned(port, pid) {
-    const value: unknown = JSON.parse(await powershell(`ConvertTo-Json -Compress -InputObject @(Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object LocalAddress,OwningProcess)`));
+    const value: unknown = JSON.parse(await powershell(`Import-Module ($PSHOME + '\\Modules\\NetTCPIP\\NetTCPIP.psd1') -ErrorAction Stop; ConvertTo-Json -Compress -InputObject @(Get-NetTCPConnection -State Listen -LocalPort ${port} | Select-Object LocalAddress,OwningProcess)`));
     if (!Array.isArray(value) || value.length !== 1 || value[0]?.LocalAddress !== '127.0.0.1' || value[0]?.OwningProcess !== pid)
       throw new Error('전용 loopback 포트의 프로세스 소유가 다릅니다.');
   },
