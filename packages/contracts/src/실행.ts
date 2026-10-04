@@ -4,6 +4,14 @@ import type { RunResult } from './결과.js';
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const identifier = z.string().min(1).max(160);
+const storagePath = z.string().min(1).max(4096).refine(value => /^(?:[A-Za-z]:[\\/]|\/)/u.test(value)
+  && !/[\x00-\x1f\x7f]/u.test(value), '검사 자료의 절대 저장 경로가 필요합니다.');
+export const outputStorageSchema = z.strictObject({
+  layoutVersion: z.literal(1), configuredRoot: storagePath.nullable(), runsRoot: storagePath,
+  namespaceId: z.uuid().nullable(), revision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+}).refine(value => value.configuredRoot === null || (value.namespaceId !== null && value.revision > 0),
+  '사용자 지정 저장 위치의 이름 공간과 개정이 필요합니다.');
+export type OutputStorageSnapshot = z.infer<typeof outputStorageSchema>;
 export const planRegistrationSchema = z.strictObject({
   project: z.strictObject({ id: z.uuid(), name: identifier, repositoryIdentity: z.string().min(1).max(2048) }),
   workspace: z.strictObject({ id: z.uuid(), realPath: z.string().min(1).max(4096), pathFingerprint: hash }),
@@ -11,6 +19,7 @@ export const planRegistrationSchema = z.strictObject({
   plan: z.strictObject({
     id: z.uuid(), fingerprint: hash, sourceHash: hash, profile: identifier,
     plannedChecks: z.array(identifier).max(100000), requiredChecks: z.array(identifier).max(100000),
+    outputStorage: outputStorageSchema.optional(),
     nativeResourceRoot: z.string().min(1).max(4096).refine(value => /^(?:[A-Za-z]:[\\/]|\/)/u.test(value)
       && !/[\x00-\x1f\x7f]/u.test(value), '네이티브 자원의 절대 전용 폴더가 필요합니다.').optional(),
   }),

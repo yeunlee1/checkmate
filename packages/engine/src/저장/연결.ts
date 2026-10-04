@@ -5,7 +5,7 @@ import { resultInputSchema } from '@checkmate/contracts';
 import { engineVersion } from '../버전.js';
 import { dirname, isAbsolute } from 'node:path';
 import Database from 'better-sqlite3';
-import { schemaTables, currentSchemaTables, currentSchemaVersion, storeMigrations } from './스키마.js';
+import { schemaTablesByVersion, currentSchemaVersion, storeMigrations } from './스키마.js';
 
 export class StoreSchemaError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -30,8 +30,8 @@ export function assertStoreSchema(db: Database.Database): number {
     throw new StoreSchemaError('schema-mismatch', '저장 스키마의 체크섬이 일치하지 않습니다.');
   }
   const actual = new Set(tables);
-  const expected = migrations.length === 1 ? schemaTables : currentSchemaTables;
-  if (actual.size !== expected.length || expected.some((name) => !actual.has(name))) {
+  const expected = schemaTablesByVersion[migrations[migrations.length - 1]!.version];
+  if (!expected || actual.size !== expected.length || expected.some((name) => !actual.has(name))) {
     throw new StoreSchemaError('unrecognized-database', '저장 파일의 테이블 구성이 일치하지 않습니다.');
   }
   if ((db.pragma('foreign_key_check') as unknown[]).length > 0) {
