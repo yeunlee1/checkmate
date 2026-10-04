@@ -13,5 +13,5 @@ contextBridge.exposeInMainWorld('checkmate', {
   initializeLocalStore: () => ipcRenderer.invoke('checkmate:initialize'),
   exportReport: (runId: string) => ipcRenderer.invoke('checkmate:export', runId, language()),
   connectionInfo: () => ipcRenderer.invoke('checkmate:connection-info'),
-  update: (action: 'status' | 'check' | 'apply') => ipcRenderer.invoke('checkmate:update', action),
+  update: (action: 'status' | 'check' | 'download' | 'apply') => ipcRenderer.invoke('checkmate:update', action),
 });

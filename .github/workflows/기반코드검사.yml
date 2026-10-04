@@ -17,7 +17,7 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 10 }}
     steps:
       - name: 저장소 내려받기
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

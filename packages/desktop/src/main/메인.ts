@@ -1,5 +1,5 @@
 // 데스크톱 창과 제한된 로컬 서비스 연결 및 사람의 폴더 선택을 관리한다.
-import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, session } from 'electron';
+import { app, autoUpdater, BrowserWindow, dialog, ipcMain, Menu, net, session } from 'electron';
 import type { IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
@@ -8,9 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { apiRequestSchema, errorResponse, ServiceError } from '@checkmate/contracts/api';
 import { callService, initializeLocalStore } from '@checkmate/engine/client';
 import { exportRunHtml } from '@checkmate/engine/report';
-import { ensureLauncher, handleSquirrelEvent, hasOwnedDataRoot } from './설치연결.js';
-import { installationRoot } from '@checkmate/engine/update-lock';
-import { UpdateController } from './업데이트.js';
+import { ensureLauncher, ensureManagedConnection, handleSquirrelEvent, hasOwnedDataRoot } from './설치연결.js';
+import { installationRoot, recoverExitedUpdateLock } from '@checkmate/engine/update-lock';
+import { UpdateController, installationIdle } from './업데이트.js';
+import { readUpdateMetadata } from './업데이트메타.js';
+import { waitForManagedIdle } from './업데이트준비.js';
 
 let squirrelExitCode: number | null = null;
 try { if (app.isPackaged && handleSquirrelEvent(process.argv[1])) squirrelExitCode = 0; }
@@ -26,6 +28,8 @@ const cliEntry = app.isPackaged ? join(process.resourcesPath, 'engine', 'package
   : fileURLToPath(new URL('../../../engine/dist/명령.js', import.meta.url));
 let window: BrowserWindow | null = null;
 let expectedUrl = '';
+let managedCommand: { command: string; args: string[] } | null = null;
+let managedInstallation = false;
 
 function checkSender(event: IpcMainInvokeEvent): void {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url.split('#')[0] !== expectedUrl) throw new ServiceError('untrusted-frame');
@@ -38,13 +42,18 @@ function options() {
   if (!nodeExecutable) throw new ServiceError('node-runtime-missing', '개발용 Node 실행 경로가 없습니다. desktop:dev로 실행해 주세요.');
   return { dataRoot, nodeExecutable, serviceEntry };
 }
-async function refreshLauncher(): Promise<void> {
+async function refreshLauncher(reportError = true): Promise<void> {
   if (!app.isPackaged) return;
   try {
-    if (await hasOwnedDataRoot(dataRoot)) await ensureLauncher(dataRoot, options().nodeExecutable, cliEntry);
+    if (await hasOwnedDataRoot(dataRoot)) {
+      await ensureLauncher(dataRoot, options().nodeExecutable, cliEntry);
+      if (managedInstallation) managedCommand = await ensureManagedConnection(dataRoot, options().nodeExecutable, cliEntry, app.getVersion());
+    }
   } catch (error) {
+    if (!reportError) throw error;
     console.error(error);
-    dialog.showErrorBox('CLI 진입점 준비 실패', error instanceof Error ? error.message : String(error));
+    if (!(error instanceof ServiceError && error.code === 'update-in-progress'))
+      dialog.showErrorBox('CLI 진입점 준비 실패', error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -53,12 +62,16 @@ else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window?.isMinimized()) window.restore(); window?.show(); window?.focus(); });
   void app.whenReady().then(async () => {
-  const updates = new UpdateController(autoUpdater, app.isPackaged && process.platform === 'win32' ? await installationRoot() : null);
-  try { await updates.recover(); } catch { /* 소유권이 불명확하면 기존 잠금을 보존한다. */ }
+  const updateRoot = app.isPackaged && process.platform === 'win32' ? await installationRoot() : null;
+  managedInstallation = updateRoot !== null;
+  const updates = new UpdateController(autoUpdater, updateRoot,
+    app.getVersion(), () => readUpdateMetadata(net.request), () => waitForManagedIdle(updateRoot!));
+  try { if (updateRoot) await recoverExitedUpdateLock(updateRoot, () => installationIdle(updateRoot)); } catch { /* 소유권이 불명확하면 기존 잠금을 보존한다. */ }
   ipcMain.handle('checkmate:update', async (event, action: unknown) => {
     checkSender(event);
     if (action === 'status') return updates.status();
     if (action === 'check') return updates.check();
+    if (action === 'download') return updates.download();
     if (action === 'apply') return updates.apply();
     throw new ServiceError('invalid-input');
   });
@@ -88,6 +101,7 @@ else {
     try {
       if (Buffer.byteLength(JSON.stringify(raw), 'utf8') > 256 * 1024) throw new ServiceError('message-too-large');
       const request = apiRequestSchema.parse(raw);
+      if (updateRoot) await recoverExitedUpdateLock(updateRoot, () => installationIdle(updateRoot));
       return await callService(request, options());
     } catch (error) { return errorResponse(requestId, error); }
   });
@@ -125,7 +139,14 @@ else {
   });
   ipcMain.handle('checkmate:connection-info', async (event) => {
     checkSender(event);
-    return { version: app.getVersion(), dataPath: dataRoot, mcpCommand: { command: options().nodeExecutable, args: [cliEntry, '--data-dir', dataRoot, 'mcp'] } };
+    try {
+      if (managedInstallation && await hasOwnedDataRoot(dataRoot) && !managedCommand) {
+        await recoverExitedUpdateLock(updateRoot!, () => installationIdle(updateRoot!));
+        await refreshLauncher(false);
+        if (!managedCommand) throw new ServiceError('managed-connection-unavailable');
+      }
+      return { version: app.getVersion(), dataPath: dataRoot, mcpCommand: managedCommand ?? { command: options().nodeExecutable, args: [cliEntry, '--data-dir', dataRoot, 'mcp'] } };
+    } catch (error) { return errorResponse(randomUUID(), error); }
   });
   await window.loadURL(expectedUrl);
   window.on('closed', () => { window = null; });

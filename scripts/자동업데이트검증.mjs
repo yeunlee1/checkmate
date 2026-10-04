@@ -78,12 +78,13 @@ import {UpdateController} from ${JSON.stringify(resolve('packages/desktop/src/ma
 if(process.argv.some(x=>/^--squirrel-(install|updated|uninstall|obsolete)$/.test(x))) app.exit(0);
 else { app.setPath('userData',${JSON.stringify(join(root, '화면 자료'))}); void app.whenReady().then(async()=>{
 const native={on:(...args)=>autoUpdater.on(...args),setFeedURL:()=>autoUpdater.setFeedURL({url:${JSON.stringify(feed)}}),checkForUpdates:()=>autoUpdater.checkForUpdates(),quitAndInstall:()=>autoUpdater.quitAndInstall()};
-const controller=new UpdateController(native,${JSON.stringify(install)});
+const readMetadata=async()=>{const response=await fetch(${JSON.stringify(feed + '/RELEASES')});if(!response.ok)throw new Error('fixture-metadata-unavailable');return (await response.text()).replace(/\\S+-1\\.0\\.1-full\\.nupkg/g,'CheckMate-1.0.1-full.nupkg');};
+const controller=new UpdateController(native,${JSON.stringify(install)},app.getVersion(),readMetadata);
 autoUpdater.on('error',error=>{void writeFile(${JSON.stringify(join(root, '업데이트오류.log'))},String(error.stack));});
 let command=0,busy=false; await controller.recover();
 setInterval(async()=>{if(busy)return;busy=true;try{
 let next;try{next=JSON.parse(await readFile(${JSON.stringify(commandFile)},'utf8'));}catch{next={};}
-if(next.id>command){command=next.id;if(next.action==='quit'){app.quit();return;}if(app.getVersion()==='1.0.0'){if(next.action==='check')await controller.check();if(next.action==='apply')await controller.apply();}}
+if(next.id>command){command=next.id;if(next.action==='quit'){app.quit();return;}if(app.getVersion()==='1.0.0'){if(next.action==='check')await controller.check();if(next.action==='download')await controller.download();if(next.action==='apply')await controller.apply();}}
 await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.status(),version:app.getVersion(),pid:process.pid,command}));
 }catch(error){await writeFile(${JSON.stringify(join(root, '앱오류.txt'))},String(error.stack));app.exit(1);}finally{busy=false;}},200);
 }).catch(error=>{console.error(error);app.exit(1);});
@@ -125,15 +126,23 @@ await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.stat
   appChild = spawn(join(install, 'app-1.0.0/CheckMate.exe'), [], { env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
   appChild.stderr.pipe(createWriteStream(join(root, '앱표준오류.log')));
   await waitFor(async () => (await state()).version === '1.0.0');
-  assert.equal((await action('check', 'blocked')).reason, 'engine-active');
-  assert.equal(requests.length, 0); report.phases.push('active-engine-blocked');
+  await writeFile(commandFile, JSON.stringify({ id: ++lastCommand, action: 'check' }));
+  await waitFor(async () => { const value = await state(); return value.command === lastCommand && value.state !== 'checking'; });
+  assert.equal((await state()).state, 'available');
+  assert.equal((await state()).availableVersion, '1.0.1');
+  assert.equal((await state()).downloaded, false);
+  assert.ok(requests.includes('RELEASES'));
+  assert.equal(requests.some(name => name.endsWith('.nupkg')), false);
+  report.phases.push('active-engine-metadata-check');
+  assert.equal((await action('download', 'blocked')).reason, 'engine-active');
+  assert.equal(requests.some(name => name.endsWith('.nupkg')), false); report.phases.push('active-engine-download-blocked');
   // 서비스가 스스로 유휴 종료할 때까지 기다린다. 다른 세션 프로세스를 종료하지 않는다.
   await waitFor(async () => {
-    const id = ++lastCommand; await writeFile(commandFile, JSON.stringify({ id, action: 'check' }));
+    const id = ++lastCommand; await writeFile(commandFile, JSON.stringify({ id, action: 'download' }));
     await waitFor(async () => (await state()).command === id, 20000);
     const value = await state();
     // 다른 프로세스가 종료되는 순간 관측이 불명확하면 제품은 안전하게 보류한다.
-    if (value.reason === 'check-unavailable') report.observationDeferrals = (report.observationDeferrals ?? 0) + 1;
+    if (['check-unavailable', 'download-unavailable'].includes(value.reason)) report.observationDeferrals = (report.observationDeferrals ?? 0) + 1;
     return ['checking', 'downloading'].includes(value.state) || value.reason === 'update-failed';
   }, 120000);
   await waitFor(async () => (await state()).state === 'error');
@@ -142,7 +151,7 @@ await writeFile(${JSON.stringify(statusFile)},JSON.stringify({...controller.stat
   assert.equal((await lstat(dbPath)).isFile(), true);
   const digest = async () => createHash('sha256').update(await readFile(dbPath)).digest('hex');
   report.databaseBefore = await digest(); corrupt = false;
-  await writeFile(commandFile, JSON.stringify({ id: ++lastCommand, action: 'check' }));
+  await writeFile(commandFile, JSON.stringify({ id: ++lastCommand, action: 'download' }));
   await waitFor(async () => packageWaiting);
   await assert.rejects(() => cli('1.0.0', 'projects'), error => JSON.parse(error.stdout).error.code === 'update-in-progress');
   report.phases.push('new-cli-blocked-during-download'); releasePackage(); releasePackage = undefined;
