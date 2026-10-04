@@ -17,7 +17,7 @@ import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { SQLiteRunStore } from '../packages/engine/src/저장/실행저장.js';
 import { createStoreFixture } from './저장시험자료.js';
 
-const workerRoot = resolve('.runtime/동시사용개선/워커2');
+const workerRoot = resolve('.runtime/동시사용개선/실행잠금보완');
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 const sha = (value: Buffer) => createHash('sha256').update(value).digest('hex');
@@ -71,12 +71,10 @@ async function fixture(real = false) {
   const runId = newRun(db, files.directory);
   let retain = false;
   cleanup.push(async () => {
-    if (real) {
-      try {
-        const records = (db.prepare('SELECT id FROM resources').all() as { id: string }[]).map(row => store.get(row.id));
-        if (records.some(record => record.state !== 'cleaned' || record.cleanup?.verified !== true)) retain = true;
-      } catch { retain = true; }
-    }
+    try {
+      const records = (db.prepare('SELECT id FROM resources').all() as { id: string }[]).map(row => store.get(row.id));
+      if (records.some(record => record.state !== 'cleaned' || record.cleanup?.verified !== true)) retain = true;
+    } catch { retain = true; }
     db.close();
     if (retain) return;
     if (root !== join(workerRoot, '자원시험', rootId) || actualRoot !== root) throw new Error('시험 자원 root의 절대 경계가 다릅니다.');
@@ -226,6 +224,99 @@ test.each(['marker', 'row-owner', 'pid', 'binding', 'binary', 'path', 'restart',
   expect(result.verified).toBe(false);
   expect(f.calls).not.toContain('pg_ctl');
   expect(await readFile(join(ready.descriptor.resourcePath!, '소유.json'), 'utf8')).toBeTruthy();
+});
+
+test.each(['family-marker', 'family-binary', 'final-pid', 'final-port', 'final-observe'] as const)('%s 관측 중 소유 변경은 정지 명령 없이 자원을 보존한다', async fault => {
+  const f = await synthetic();
+  f.preserve();
+  await f.resources.prepare(f.runId, '합성토큰', new AbortController().signal, ['postgres-test'], fakeProvider);
+  const ready = f.store.list(f.runId)[0]!;
+  const markerPath = join(ready.descriptor.resourcePath!, '소유.json');
+  let afterFamily = false;
+  const family = f.driver.family.bind(f.driver);
+  f.driver.family = async pid => {
+    const children = await family(pid);
+    afterFamily = true;
+    if (fault === 'family-marker') await writeFile(markerPath, '자손 관측 중 바뀐 합성 표식');
+    if (fault === 'family-binary') f.verify.mockImplementation(() => { throw new Error('자손 관측 중 binary 변경'); });
+    return children;
+  };
+  const pidFile = (path: string) => readFile(path, 'utf8');
+  f.driver.pidFile = async path => {
+    const text = await pidFile(path);
+    if (afterFamily && fault === 'final-pid') await writeFile(markerPath, '마지막 PID 관측 중 바뀐 합성 표식');
+    return text;
+  };
+  const portOwned = f.driver.portOwned.bind(f.driver);
+  f.driver.portOwned = async (port, pid) => {
+    await portOwned(port, pid);
+    if (afterFamily && fault === 'final-port') await writeFile(markerPath, '마지막 포트 관측 중 바뀐 합성 표식');
+  };
+  const observe = f.driver.observe.bind(f.driver);
+  f.driver.observe = async pid => {
+    const identity = await observe(pid);
+    if (afterFamily && fault === 'final-observe') await writeFile(markerPath, '마지막 신원 관측 중 바뀐 합성 표식');
+    return identity;
+  };
+  f.verify.mockClear();
+  const result = await f.resources.cleanup(f.runId);
+  const markerAfter = await readFile(markerPath, 'utf8');
+  if (process.env.CHECKMATE_P2_EVIDENCE_ROOT) await writeFile(join(process.env.CHECKMATE_P2_EVIDENCE_ROOT, `네이티브-${fault}.json`), JSON.stringify({
+    utc: new Date().toISOString(), fixture: f.files.directory, root: f.root, runId: f.runId, fault, calls: f.calls,
+    result, markerAfter, resourceDirectoryPresent: (await lstat(ready.descriptor.resourcePath!)).isDirectory(), retained: true,
+  }, null, 2));
+  expect(f.calls).not.toContain('pg_ctl');
+  expect(result.verified).toBe(false);
+  expect(f.store.list(f.runId)[0]).toMatchObject({ state: 'uncertain', cleanup: { verified: false } });
+  expect((await lstat(ready.descriptor.resourcePath!)).isDirectory()).toBe(true);
+});
+
+test.each(['native', 'forward-slash'] as const)('%s PID 경로의 정확 표기는 합성 정리를 허용한다', async format => {
+  const f = await synthetic();
+  await f.resources.prepare(f.runId, '합성토큰', new AbortController().signal, ['postgres-test'], fakeProvider);
+  const ready = f.store.list(f.runId)[0]!;
+  const path = join(ready.descriptor.clusterPath!, 'postmaster.pid');
+  const parts = (await readFile(path, 'utf8')).split('\n');
+  parts[1] = format === 'native' ? ready.descriptor.clusterPath! : ready.descriptor.clusterPath!.replaceAll('\\', '/');
+  await writeFile(path, parts.join('\n'));
+  const result = await f.resources.cleanup(f.runId);
+  if (process.env.CHECKMATE_P2_EVIDENCE_ROOT) await writeFile(join(process.env.CHECKMATE_P2_EVIDENCE_ROOT, `PID-${format}.json`), JSON.stringify({
+    utc: new Date().toISOString(), fixture: f.files.directory, root: f.root, runId: f.runId, format, pidPath: parts[1], calls: f.calls, result,
+  }, null, 2));
+  expect(result.verified).toBe(true);
+  expect(f.calls.filter(binary => binary === 'pg_ctl')).toHaveLength(1);
+  await expect(lstat(ready.descriptor.resourcePath!)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test.each(['dotdot', 'dot', 'duplicate', 'case', 'other', 'relative', 'space'] as const)('%s PID 경로 별칭은 정지 명령 없이 원문과 자료를 보존한다', async alias => {
+  const f = await synthetic();
+  f.preserve();
+  await f.resources.prepare(f.runId, '합성토큰', new AbortController().signal, ['postgres-test'], fakeProvider);
+  const ready = f.store.list(f.runId)[0]!;
+  const cluster = ready.descriptor.clusterPath!;
+  const separator = process.platform === 'win32' ? '\\' : '/';
+  const path = join(cluster, 'postmaster.pid');
+  const parts = (await readFile(path, 'utf8')).split('\n');
+  parts[1] = alias === 'dotdot' ? `${cluster}${separator}..${separator}cluster`
+    : alias === 'dot' ? `${dirname(cluster)}${separator}.${separator}cluster`
+    : alias === 'duplicate' ? `${dirname(cluster)}${separator}${separator}cluster`
+    : alias === 'case' ? `${cluster.slice(0, -7)}CLUSTER`
+    : alias === 'other' ? `${cluster}-other`
+    : alias === 'relative' ? 'cluster' : ` ${cluster} `;
+  const originalPid = parts.join('\n');
+  await writeFile(path, originalPid);
+  const originalMarker = await readFile(join(ready.descriptor.resourcePath!, '소유.json'), 'utf8');
+  const result = await f.resources.cleanup(f.runId);
+  const pidAfter = await readFile(path, 'utf8').catch(() => null);
+  const markerAfter = await readFile(join(ready.descriptor.resourcePath!, '소유.json'), 'utf8').catch(() => null);
+  if (process.env.CHECKMATE_P2_EVIDENCE_ROOT) await writeFile(join(process.env.CHECKMATE_P2_EVIDENCE_ROOT, `PID-${alias}.json`), JSON.stringify({
+    utc: new Date().toISOString(), fixture: f.files.directory, root: f.root, runId: f.runId, alias, originalPid, pidAfter, originalMarker, markerAfter, calls: f.calls, result, retained: true,
+  }, null, 2));
+  expect(f.calls).not.toContain('pg_ctl');
+  expect(result.verified).toBe(false);
+  expect(f.store.list(f.runId)[0]).toMatchObject({ state: 'uncertain', cleanup: { verified: false } });
+  expect(pidAfter).toBe(originalPid);
+  expect(markerAfter).toBe(originalMarker);
 });
 
 test.each(['response', 'conflict', 'binary-before', 'initdb-failure', 'initdb-timeout'] as const)('%s 준비 실패는 자동 fallback·정리·재요청 없이 보존한다', async fault => {

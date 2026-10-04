@@ -402,9 +402,8 @@ export class ProductService {
     if (!this.projects.hasApproval(plan.plan.id)) throw new ServiceError('needs-approval');
     const owner = this.runs.getControl(runId);
     if (owner) this.runs.assertControl(runId, this.sessions.find(owner.ownerId));
-    const lease = this.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(runId) as { lease_json: string } | undefined;
+    const lease = this.checkedExecutionLease(runId);
     if (!lease) throw new ServiceError('lock-ownership-unknown');
-    this.locks.assert(JSON.parse(lease.lease_json) as Lease, this.planLockKeys(plan));
   }
 
   private requireRun(runId: string): RunResult {

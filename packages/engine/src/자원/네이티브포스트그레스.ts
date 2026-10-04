@@ -190,7 +190,8 @@ export class NativePostgresResources {
     const text = this.driver.pidFile ? await this.driver.pidFile(path) : await readFile(path, 'utf8');
     const parts = text.trim().split(/\r?\n/u);
     const pid = Number(parts[0]);
-    if (!Number.isSafeInteger(pid) || pid < 1 || pid !== expectedPid || resolve(parts[1]!) !== descriptor.clusterPath
+    if (!Number.isSafeInteger(pid) || pid < 1 || pid !== expectedPid
+      || (parts[1] !== descriptor.clusterPath && (process.platform !== 'win32' || parts[1] !== descriptor.clusterPath.replaceAll('\\', '/')))
       || Number(parts[3]) !== descriptor.hostPort || parts[5]?.trim() !== '127.0.0.1'
       || parts[7]?.trim() !== 'ready' || !Number.isSafeInteger(Number(parts[2])) || Number(parts[2]) < 1)
       throw new Error('실제 클러스터와 PID 및 포트의 연결이 다릅니다.');
@@ -279,17 +280,22 @@ export class NativePostgresResources {
         if (!isDeepStrictEqual(actual, identity)) throw new Error('PID와 프로세스 시작 신원이 다릅니다.');
         await this.pidBinding(descriptor, expected.pid);
         await this.driver.portOwned(descriptor.hostPort, expected.pid);
-        // 정지 실행 직전에 등록 실행 파일과 소유 표식을 다시 확인한다.
-        await this.ownership(record);
       }
       const descendants = await this.driver.family(expected.pid);
       if (descendants.some(child => child.executable !== expected.executable)) throw new Error('자손 프로세스의 실행 파일 소유를 확인하지 못했습니다.');
       if (actual) {
         const { postmasterStart: _start, ...identity } = expected;
+        // 자손 조회 이후 등록 실행 파일과 소유 표식을 다시 확인한다.
+        await this.ownership(record);
         // binary 버전 관측과 자손 조회 이후 정지 직전의 신원을 다시 결합한다.
         await this.pidBinding(descriptor, expected.pid);
         await this.driver.portOwned(descriptor.hostPort, expected.pid);
         if (!isDeepStrictEqual(await this.driver.observe(expected.pid), identity)) throw new Error('정지 직전에 프로세스 신원이 바뀌었습니다.');
+        // 마지막 비동기 관측 중 바뀐 표식도 정지 명령 전에 동기로 거절한다.
+        actualPath(this.resourceRoot, true);
+        actualPath(descriptor.resourcePath, true);
+        const marker = actualPath(join(descriptor.resourcePath, '소유.json'), false);
+        if (sha(readFileSync(marker)) !== descriptor.markerSha256) throw new Error('정지 직전에 전용 자원 표식이 바뀌었습니다.');
         await this.driver.command(descriptor.binaries, 'pg_ctl', ['stop', '-D', descriptor.clusterPath, '-m', 'fast', '-w', '-t', '30']);
       }
       for (let attempt = 0; attempt < 20 && await this.driver.observe(expected.pid); attempt++)

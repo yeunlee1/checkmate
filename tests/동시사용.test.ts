@@ -10,6 +10,7 @@ import { runResultSchema, type RunResult } from '@checkmate/contracts';
 import { RunStoreError, type PlanRegistration } from '@checkmate/contracts/runs';
 import { readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { SharedLocks, executionLockKeys } from '../packages/engine/src/연결/공유잠금.js';
+import type { Lease } from '../packages/engine/src/연결/공유잠금.js';
 import { connectStore } from '../packages/engine/src/저장/연결.js';
 import { EvidenceStore } from '../packages/engine/src/저장/증거저장.js';
 import { ProductService } from '../packages/engine/src/서비스/제품서비스.js';
@@ -24,14 +25,20 @@ function data<T>(response: ApiResponse): T {
   return response.data as T;
 }
 async function fixture(exclusiveResource?: string, lockRoot?: string) {
-  const f = await createStoreFixture(); cleanup.push(f.cleanup);
+  const f = await createStoreFixture();
+  let retain = false;
+  cleanup.push(async () => { if (!retain) await f.cleanup(); });
   const a = await writeConcurrentProject(f.directory, '작업A');
   const b = await writeConcurrentProject(f.directory, '작업B', a.projectId);
   if (exclusiveResource) for (const project of [a, b]) {
     const source = { ...project.source.project, commands: project.source.project.commands.map(command => ({ ...command, exclusiveResources: [exclusiveResource] })) };
     await writeFile(join(project.projectRoot, 'checkmate', '프로젝트.json'), JSON.stringify(source));
   }
-  const db = connectStore(f.dbPath); cleanup.push(async () => { db.close(); });
+  const db = connectStore(f.dbPath);
+  cleanup.push(async () => {
+    if (db.prepare('SELECT 1 FROM execution_locks LIMIT 1').get()) retain = true;
+    db.close();
+  });
   await mkdir(join(f.directory, 'runs'));
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
@@ -50,7 +57,7 @@ async function fixture(exclusiveResource?: string, lockRoot?: string) {
   await calls('approve', { planId: planA.planId, fingerprint: planA.fingerprint });
   await calls('approve', { planId: planB.planId, fingerprint: planB.fingerprint });
   cleanup.push(async () => { release(); await new Promise(resolve => setTimeout(resolve, 20)); });
-  return { f, a, b, db, product, calls, infoA, infoB, planA, planB, release, executor };
+  return { f, a, b, db, product, calls, infoA, infoB, planA, planB, release, executor, preserve: () => { retain = true; } };
 }
 
 it('다른 workspace 계획과 ambiguous 생략을 거절하고 같은 요청의 본문 및 owner를 검증한다.', async () => {
@@ -187,6 +194,60 @@ it.each(['approval', 'source', 'catalog', 'owner', 'lock'] as const)('queue 출�
   expect(f.executor).toHaveBeenCalledTimes(2);
   expect(f.product.runs.getRun(queued.runId)).toMatchObject({ state: 'blocked', finalized: true, verdict: 'incomplete' });
   expect(f.db.prepare('SELECT count(*) AS count FROM runs').get()).toEqual({ count: 3 });
+});
+
+it.each(['other-run', 'malformed', 'absent'] as const)('queue 출발 직전에 %s lease 참조는 실행기 호출 없이 차단하고 원본을 보존한다.', async fault => {
+  const f = await fixture();
+  f.preserve();
+  const third = await writeConcurrentProject(f.f.directory, '작업C', f.a.projectId);
+  const info = data<{ workspaceId: string }>(await f.calls('register', { path: third.projectRoot }));
+  const plan = data<{ planId: string; fingerprint: string }>(await f.calls('inspect', { projectId: f.a.projectId, workspaceId: info.workspaceId, profile: 'quick' }));
+  data(await f.calls('approve', { planId: plan.planId, fingerprint: plan.fingerprint }));
+  const start = (workspaceId: string, planId: string) => f.calls('start', { projectId: f.a.projectId, workspaceId, planId });
+  const first = data<{ runId: string }>(await start(f.infoA.workspaceId, f.planA.planId));
+  const second = data<{ runId: string }>(await start(f.infoB.workspaceId, f.planB.planId));
+  await vi.waitFor(() => expect(f.executor).toHaveBeenCalledTimes(2));
+  const queued = data<{ runId: string }>(await start(info.workspaceId, plan.planId));
+  expect(f.product.runs.getRun(queued.runId)?.state).toBe('queued');
+  const row = f.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(queued.runId) as { lease_json: string };
+  const own = JSON.parse(row.lease_json) as Lease;
+  const ownPath = join(f.product.locks.root, `${own.runId}-${own.generation}.json`);
+  const originalOwn = await readFile(ownPath, 'utf8');
+  const priorResults = [first, second].map(run => f.db.prepare('SELECT summary_json FROM runs WHERE id=?').get(run.runId));
+  let foreignPath: string | undefined, originalForeign: string | undefined;
+  if (fault === 'other-run') {
+    const foreign = { ...own, runId: randomUUID(), generation: randomUUID() };
+    foreignPath = join(f.product.locks.root, `${foreign.runId}-${foreign.generation}.json`);
+    originalForeign = JSON.stringify({ ...foreign, phase: 'admitted' });
+    await writeFile(foreignPath, originalForeign, { flag: 'wx' });
+    f.product.locks.assert(foreign, own.keys);
+    f.db.prepare('UPDATE execution_locks SET lease_json=? WHERE run_id=?').run(JSON.stringify(foreign), queued.runId);
+  } else if (fault === 'malformed') {
+    // 자기 새 합성 DB에서만 JSON 제약을 잠시 열어 손상 저장 참조를 주입한다.
+    f.db.pragma('ignore_check_constraints = ON');
+    try { f.db.prepare('UPDATE execution_locks SET lease_json=? WHERE run_id=?').run('{', queued.runId); }
+    finally { f.db.pragma('ignore_check_constraints = OFF'); }
+  } else f.db.prepare('DELETE FROM execution_locks WHERE run_id=?').run(queued.runId);
+  const injectedRow = f.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(queued.runId);
+  expect([first, second].map(run => f.db.prepare('SELECT summary_json FROM runs WHERE id=?').get(run.runId))).toEqual(priorResults);
+  f.release();
+  await Promise.all([first, second, queued].map(run => f.product.execution.wait(run.runId)));
+  await vi.waitFor(() => expect(f.product.active).toBe(false));
+  const result = f.product.runs.getRun(queued.runId);
+  const ownAfter = await readFile(ownPath, 'utf8');
+  const foreignAfter = foreignPath ? await readFile(foreignPath, 'utf8') : undefined;
+  if (process.env.CHECKMATE_P2_EVIDENCE_ROOT) await writeFile(join(process.env.CHECKMATE_P2_EVIDENCE_ROOT, `큐-${fault}.json`), JSON.stringify({
+    utc: new Date().toISOString(), fixture: f.f.directory, runId: queued.runId, fault, executorCalls: f.executor.mock.calls.filter(call => call[1].runId === queued.runId).length,
+    result, ownPath, foreignPath, originalOwn, ownAfter, originalForeign, foreignAfter, injectedRow,
+    finalRow: f.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(queued.runId),
+    priorResults, finalPriorResults: [first, second].map(run => f.db.prepare('SELECT summary_json FROM runs WHERE id=?').get(run.runId)), retained: true,
+  }, null, 2));
+  expect(f.executor.mock.calls.filter(call => call[1].runId === queued.runId)).toHaveLength(0);
+  expect(result).toMatchObject({ state: 'blocked', finalized: true, verdict: 'incomplete' });
+  expect(ownAfter).toBe(originalOwn);
+  expect(foreignAfter).toBe(originalForeign);
+  expect(f.db.prepare('SELECT lease_json FROM execution_locks WHERE run_id=?').get(queued.runId)).toEqual(injectedRow);
+  expect([first, second].map(run => f.product.runs.getRun(run.runId)?.verdict)).toEqual(['passed', 'passed']);
 });
 
 it('같은 workspace 새 실행은 막고 다른 workspace는 동시에 실행하며 queued 인계 뒤 구권한은 거절한다.', async () => {
